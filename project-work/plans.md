@@ -432,3 +432,22 @@ py -3.13 -m py_compile app.py
 - `git diff --check`
 - Focused review confirmed transparent grid and axis materials share a render queue, making the explicit
   `renderOrder` values effective; the legacy embedded fallback uses the same double-sided grid behavior.
+
+## Current Request: NPY point-cloud support (2026-08-31)
+
+- [x] Create a recoverable Git checkpoint before the implementation changes (`45fe61d`).
+- [x] Add canonical `.npy` parsing for numeric `(N, >=3)` arrays with optional RGB columns.
+- [x] Enable `.npy` for initial upload, append upload, Comparison, and server-side frame-directory import.
+- [x] Update active and legacy file pickers plus repository documentation.
+- [x] Run parser/API/frontend syntax checks, `git diff --check`, and a focused code review before marking this complete.
+
+2026-08-31 verification completed:
+
+- `D:\Develop\Python\CPython\Python313\python.exe -m py_compile app.py`
+- In-memory NumPy/Flask regression covered `(N, 3)`, `(N, >=6)`, RGB normalization, identity quaternion defaults,
+  initial upload, append upload, Comparison binary payloads, `.pt`/`.npy` directory frames, and invalid shapes.
+- Node inline-script parsing confirmed both active editor script blocks are valid JavaScript.
+- Live server smoke check returned HTTP 200 for `/` and confirmed the served active page advertises `.npy`.
+- `git diff --check`
+- Focused review covered extension routing, pickle-disabled NumPy loading, optional RGB fallback behavior, legacy
+  multipart 4DGS import, mixed `.pt`/`.npy` frame directories, and preservation of existing `.ply`/`.pt` paths.

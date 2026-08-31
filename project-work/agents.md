@@ -204,6 +204,15 @@ static points from SH DC. Verify this work using Flask's test client and in-memo
 - Invalid raw Tensor shapes raise `ValueError("Raw .pt tensors must have shape (N, >=3).")`; gsplat dict/list
   payload handling remains unchanged.
 
+## NPY Point-cloud Notes (2026-08-31)
+
+- `load_npy_bytes` accepts a numeric NumPy array shaped `(N, >=3)` with columns 0..2 as XYZ and columns 3..5
+  as optional RGB. Columns after the first six are ignored; non-finite XYZ and invalid shapes are rejected.
+- `.npy` uses the same canonical defaults as a raw Tensor PT cloud: identity quaternions, zero scales/opacities,
+  no spherical-harmonic rest coefficients, and SH degree 0.
+- Initial upload, append upload, Comparison upload, and server-side 4DGS frame directories accept `.npy`.
+- Active and legacy file pickers advertise `.ply`, `.pt`, and `.npy`; generated exports remain `.pt`/PLY.
+
 ## Point-cloud Scaling Notes (2026-08-19)
 
 - The editor keeps `editorScale` separate from Comparison state. Preview always starts from immutable

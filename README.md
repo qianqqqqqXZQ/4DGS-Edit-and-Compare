@@ -8,14 +8,14 @@ The project was designed for reconstruction and LiDAR-alignment work, where a mo
 
 - **Part-level editing:** Select static vertices and group them into editable Parts. Each Part has an independent name, color, pivot, translation, and rotation.
 - **Keyframed 4D editing:** Animate Part transforms along a timeline with linear or Catmull-Rom interpolation, then preview the result in the browser.
-- **4DGS support:** Load `.ply` point clouds, gsplat-style `.pt` checkpoints, raw PyTorch tensors, or a directory of `.pt` frames as a looping 4DGS Part.
+- **4DGS support:** Load `.ply` point clouds, `.npy` arrays, gsplat-style `.pt` checkpoints, raw PyTorch tensors, or a directory of `.pt`/`.npy` frames as a looping 4DGS Part.
 - **Cloud-to-cloud comparison:** Load Cloud A and Cloud B in an isolated comparison workspace, view them individually, overlaid, or in synchronized dual viewports.
 - **Alignment and evaluation:** Apply independent translation, ZYX rotation, and centroid-preserving scale to each comparison cloud. Generate Markdown reports with Accuracy, Completeness, Chamfer Distance, F-Score, AUC, and optional normal consistency.
 - **Export-ready output:** Export a transformed comparison cloud as binary PLY, the current editor frame as `.pt`, or every timeline frame as a batch export. New workspaces default to one frame.
 
 ## What You Can Do
 
-1. Upload one or more static `.ply` or `.pt` point clouds. Each uploaded file can become an editable Part.
+1. Upload one or more static `.ply`, `.npy`, or `.pt` point clouds. Each uploaded file can become an editable Part.
 2. Use rectangle selection to isolate vertices, create new Parts, set a centroid pivot, and make precise pose adjustments.
 3. Add keyframes and scrub or play the timeline to inspect interpolated motion.
 4. Import a server-side 4DGS frame directory and combine dynamic content with static edited geometry.
@@ -26,9 +26,10 @@ The project was designed for reconstruction and LiDAR-alignment work, where a mo
 | Format | Supported content |
 | --- | --- |
 | `.ply` | XYZ coordinates, optional RGB, Gaussian rotations, scales, opacity, and spherical-harmonic attributes. |
+| `.npy` | Numeric array shaped `(N, >=3)`; columns 1-3 are XYZ, columns 4-6 are optional RGB, and later columns are ignored. |
 | `.pt` checkpoint | Flat or nested gsplat-style data with fields such as `means`, `quats`, `scales`, `opacities`, `sh0`, and `shN`. |
 | Raw `.pt` tensor | A two-dimensional tensor shaped `(N, >=3)`. The first three columns are XYZ and columns 4-6, when present, are interpreted as RGB. |
-| 4DGS directory | A directory of filename-sorted `.pt` frames, imported as an animated Part with optional looping. |
+| 4DGS directory | A directory of filename-sorted `.pt` or `.npy` frames, imported as an animated Part with optional looping. |
 
 For data with spherical harmonics but no explicit RGB, the viewport derives display color from the DC coefficient. The editor preserves Gaussian attributes when exporting `.pt` data.
 
@@ -120,7 +121,7 @@ docker run --rm -p 5011:5011 -v /path/to/frames:/data/frames 3d-editor
 
 ## Editing Workflow
 
-1. Select **Upload** to replace the current static workspace, or **Add Files** to append point clouds.
+1. Select **Upload** to replace the current static workspace, or **Add Files** to append point clouds. `.npy` files use the same `(N, >=3)` convention described above.
 2. Enter **Select** mode, drag a rectangle around static vertices, and choose **Create Part**.
 3. Select a Part to edit its name, color, pivot, translation, rotation, and global editor scale.
 4. Save a keyframe at the current timeline position; scrub or play to inspect the motion.

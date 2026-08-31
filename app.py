@@ -44,6 +44,7 @@ PART_COLORS = [
     [0.3, 0.5, 0.9],
 ]
 C0 = 0.28209479177387814
+SUPPORTED_POINTCLOUD_EXTENSIONS = (".ply", ".pt", ".npy")
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = 400 * 1024 * 1024
@@ -235,6 +236,26 @@ def load_pt_bytes(data: bytes) -> Dict[str, Any]:
     return frame
 
 
+def load_npy_bytes(data: bytes) -> Dict[str, Any]:
+    """Load an ``N x >=3`` NumPy array as a point cloud."""
+    try:
+        array = np.load(io.BytesIO(data), allow_pickle=False)
+    except (OSError, ValueError, EOFError) as exc:
+        raise ValueError(f"Invalid .npy file: {exc}") from exc
+    if not isinstance(array, np.ndarray) or array.ndim != 2 or array.shape[1] < 3:
+        raise ValueError("Raw .npy arrays must have shape (N, >=3).")
+    try:
+        raw = np.asarray(array, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Raw .npy arrays must contain numeric values.") from exc
+    if not np.isfinite(raw[:, :3]).all():
+        raise ValueError("Raw .npy XYZ coordinates must be finite.")
+    payload = {"xyz": raw[:, :3]}
+    if raw.shape[1] >= 6:
+        payload["colors"] = raw[:, 3:6]
+    return _normalise_frame(payload)
+
+
 def load_ply(filepath: str) -> Dict[str, Any]:
     """Load a PLY file into the editor's canonical NumPy representation."""
     with open(filepath, "rb") as handle:
@@ -245,6 +266,34 @@ def load_pt(filepath: str) -> Dict[str, Any]:
     """Load a gsplat checkpoint (nested ``splats`` or flat) from disk."""
     with open(filepath, "rb") as handle:
         return load_pt_bytes(handle.read())
+
+
+def load_npy(filepath: str) -> Dict[str, Any]:
+    """Load an ``N x >=3`` NumPy point-cloud array from disk."""
+    with open(filepath, "rb") as handle:
+        return load_npy_bytes(handle.read())
+
+
+def _load_pointcloud_path(filepath: str, extension: Optional[str] = None) -> Dict[str, Any]:
+    ext = (extension or os.path.splitext(filepath)[1]).lower()
+    if ext == ".ply":
+        return load_ply(filepath)
+    if ext == ".pt":
+        return load_pt(filepath)
+    if ext == ".npy":
+        return load_npy(filepath)
+    raise ValueError(f"Unsupported file type: {os.path.basename(filepath) or '<unnamed>'}")
+
+
+def _load_pointcloud_bytes(data: bytes, extension: str) -> Dict[str, Any]:
+    ext = extension.lower()
+    if ext == ".ply":
+        return load_ply_bytes(data)
+    if ext == ".pt":
+        return load_pt_bytes(data)
+    if ext == ".npy":
+        return load_npy_bytes(data)
+    raise ValueError(f"Unsupported file type: {extension or '<unnamed>'}")
 
 
 def save_frame_as_pt(xyz, quats, scales, opacities, sh0, sh_rest, sh_degree, filepath, colors=None):
@@ -304,14 +353,14 @@ def _original_colors(source: Dict[str, Any]) -> np.ndarray:
 
 
 def load_4dgs_dir(dir_path: str) -> Dict[str, Any]:
-    """Load sorted ``.pt`` frames and pad all SH tensors to the maximum degree."""
+    """Load sorted ``.pt``/``.npy`` frames and pad all SH tensors to the maximum degree."""
     path = Path(dir_path)
     if not path.is_dir():
         raise FileNotFoundError(f"4DGS directory not found: {dir_path}")
-    files = sorted((p for p in path.iterdir() if p.is_file() and p.suffix.lower() == ".pt"), key=lambda p: p.name.lower())
+    files = sorted((p for p in path.iterdir() if p.is_file() and p.suffix.lower() in (".pt", ".npy")), key=lambda p: p.name.lower())
     if not files:
-        raise ValueError(f"No .pt frames found in {dir_path}")
-    frames = [load_pt(str(p)) for p in files]
+        raise ValueError(f"No .pt or .npy frames found in {dir_path}")
+    frames = [_load_pointcloud_path(str(p)) for p in files]
     max_degree = max(int(f.get("sh_degree", 0)) for f in frames)
     target_k = max(0, (max_degree + 1) ** 2 - 1)
     for frame in frames:
@@ -762,13 +811,13 @@ def api_upload():
         for uploaded in files:
             filename = os.path.basename(uploaded.filename or "")
             ext = os.path.splitext(filename)[1].lower()
-            if ext not in (".ply", ".pt"):
+            if ext not in SUPPORTED_POINTCLOUD_EXTENSIONS:
                 return jsonify({"error": f"Unsupported file type: {filename or '<unnamed>'}"}), 400
             upload_path = os.path.join(upload_dir, filename)
             uploaded.save(upload_path)
-            parsed_files.append((filename, load_ply(upload_path) if ext == ".ply" else load_pt(upload_path)))
+            parsed_files.append((filename, _load_pointcloud_path(upload_path, ext)))
     except Exception as exc: return jsonify({"error": str(exc)}), 400
-    if not parsed_files: return jsonify({"error": "没有有效的 .ply 或 .pt 文件"}), 400
+    if not parsed_files: return jsonify({"error": "没有有效的 .ply、.pt 或 .npy 文件"}), 400
     first = parsed_files[0][0]
     parsed = {}
     parsed["xyz"] = np.concatenate([p["xyz"] for _, p in parsed_files], axis=0)
@@ -809,14 +858,14 @@ def _load_uploaded_pointclouds(uploaded_files) -> List[Tuple[str, Dict[str, Any]
     for sequence, uploaded in enumerate(uploaded_files):
         filename = os.path.basename(uploaded.filename or "")
         extension = os.path.splitext(filename)[1].lower()
-        if not filename or extension not in (".ply", ".pt"):
+        if not filename or extension not in SUPPORTED_POINTCLOUD_EXTENSIONS:
             raise ValueError(f"Unsupported file type: {filename or '<unnamed>'}")
         saved_name = filename if not os.path.exists(os.path.join(upload_dir, filename)) else f"{sequence}_{filename}"
         saved_path = os.path.join(upload_dir, saved_name)
         uploaded.save(saved_path)
-        parsed_files.append((filename, load_ply(saved_path) if extension == ".ply" else load_pt(saved_path)))
+        parsed_files.append((filename, _load_pointcloud_path(saved_path, extension)))
     if not parsed_files:
-        raise ValueError("No .ply or .pt files were provided")
+        raise ValueError("No .ply, .pt, or .npy files were provided")
     return parsed_files
 
 
@@ -929,19 +978,19 @@ def api_comparison_upload():
     if not files:
         files = request.files.getlist("file")
     if len(files) != 2:
-        return jsonify({"error": "Comparison requires exactly two .ply or .pt files"}), 400
+        return jsonify({"error": "Comparison requires exactly two .ply, .pt, or .npy files"}), 400
 
     parsed = []
     try:
         for uploaded in files:
             filename = os.path.basename(uploaded.filename or "")
             extension = os.path.splitext(filename)[1].lower()
-            if not filename or extension not in (".ply", ".pt"):
+            if not filename or extension not in SUPPORTED_POINTCLOUD_EXTENSIONS:
                 raise ValueError(f"Unsupported file type: {filename or '<unnamed>'}")
             payload = uploaded.read()
             if not payload:
                 raise ValueError(f"Empty point-cloud file: {filename}")
-            source = load_ply_bytes(payload) if extension == ".ply" else load_pt_bytes(payload)
+            source = _load_pointcloud_bytes(payload, extension)
             if int(source.get("n_vertices", 0)) <= 0:
                 raise ValueError(f"Point-cloud file has no vertices: {filename}")
             parsed.append((filename, source))
@@ -1635,14 +1684,15 @@ def api_settings():
 @app.post("/api/import-4dgs")
 def api_import_4dgs():
     files = request.files.getlist("files"); names = request.form.getlist("filenames") or [f.filename for f in files]
-    if not files: return jsonify({"error": "请选择 .pt 帧序列"}), 400
+    if not files: return jsonify({"error": "请选择 .pt/.npy 帧序列"}), 400
     frames = []
     try:
         for f in files:
-            if os.path.splitext(f.filename)[1].lower() != ".pt": continue
-            frames.append(load_pt_bytes(f.read()))
+            extension = os.path.splitext(f.filename)[1].lower()
+            if extension not in (".pt", ".npy"): continue
+            frames.append(_load_pointcloud_bytes(f.read(), extension))
     except Exception as exc: return jsonify({"error": str(exc)}), 400
-    if not frames: return jsonify({"error": "没有有效的 .pt 文件"}), 400
+    if not frames: return jsonify({"error": "没有有效的 .pt/.npy 文件"}), 400
     with STATE_LOCK:
         pid = STATE["next_part_id"]; STATE["next_part_id"] += 1; base = frames[0]
         max_degree = max(int(frame.get("sh_degree", 0)) for frame in frames)
@@ -1702,7 +1752,7 @@ HTML_PAGE = r'''<!doctype html>
 <style>
 :root{--bg:#0b1020;--panel:#121a2b;--panel2:#18233a;--line:#273650;--text:#e7edf7;--muted:#8fa1bf;--accent:#43b7ff;--good:#48d597;--danger:#ff6b6b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,Segoe UI,sans-serif;overflow:hidden}button,input,select{font:inherit;color:inherit}button{border:1px solid var(--line);background:#1c2a43;padding:8px 11px;border-radius:5px;cursor:pointer}button:hover{border-color:var(--accent);background:#233856}.app{height:100vh;display:grid;grid-template-columns:280px 1fr 320px;grid-template-rows:58px 1fr 190px}.top{grid-column:1/-1;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;padding:0 18px;background:#0f1729}.brand{font-weight:700;letter-spacing:.3px;font-size:16px}.status{color:var(--muted);font-size:12px}.toolbar{margin-left:auto;display:flex;gap:8px}.side{background:var(--panel);padding:14px;border-right:1px solid var(--line);overflow:auto}.right{background:var(--panel);padding:14px;border-left:1px solid var(--line);overflow:auto}.section{border-bottom:1px solid var(--line);padding-bottom:15px;margin-bottom:15px}.section h3{margin:0 0 10px;font-size:13px;color:#c3d1e8}.row{display:flex;gap:7px;align-items:center;margin:7px 0}.row>*{min-width:0}.grow{flex:1}.small{font-size:12px;color:var(--muted)}input[type=text],input[type=number],select{width:100%;background:#0c1425;border:1px solid var(--line);border-radius:4px;padding:7px}.file{width:100%;border:1px dashed #385071;padding:10px;border-radius:5px}.part{display:flex;align-items:center;gap:8px;padding:8px;border:1px solid transparent;border-radius:5px;cursor:pointer}.part:hover,.part.active{background:var(--panel2);border-color:var(--line)}.swatch{width:11px;height:11px;border-radius:50%}.viewport{position:relative;min-width:0;background:#080d18}.viewport canvas{display:block;width:100%;height:100%}.hint{position:absolute;left:14px;top:12px;color:var(--muted);font-size:12px;pointer-events:none}.selection{position:absolute;border:1px dashed var(--accent);background:rgba(67,183,255,.12);pointer-events:none;display:none}.timeline{grid-column:1/-1;border-top:1px solid var(--line);background:#0f1729;padding:12px 18px;display:flex;flex-direction:column;gap:10px}.timeline-head{display:flex;align-items:center;gap:10px}.timeline-head input{width:80px}.track{height:36px;position:relative;background:#0b1220;border:1px solid var(--line);border-radius:4px}.ticks{display:flex;justify-content:space-between;color:var(--muted);font-size:10px;padding:3px 5px}.key{position:absolute;top:17px;width:9px;height:9px;background:var(--accent);transform:translateX(-50%) rotate(45deg)}.playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--danger);transform:translateX(-50%)}.kv{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.kv label{font-size:11px;color:var(--muted)}.kv input{margin-top:2px}.log{font-size:12px;color:var(--muted);white-space:pre-wrap;max-height:80px;overflow:auto}
 @media(max-width:1000px){.app{grid-template-columns:220px 1fr;grid-template-rows:58px 1fr 190px}.right{display:none}}
-<aside class="side"><div class="section"><h3>Data</h3><input id="fileInput" class="file" type="file" multiple accept=".ply,.pt"><input id="appendInput" class="file" type="file" multiple accept=".ply,.pt" style="display:none"><input id="frameInput" class="file" type="file" multiple accept=".pt" webkitdirectory directory style="display:none"><div id="progress" class="small"></div></div><div class="section"><h3>Parts</h3><div id="parts"></div><div class="row"><button id="newPart" class="grow">Create Part</button><button id="deletePart">Delete</button></div></div><div class="section"><h3>Viewport</h3><div class="row"><label class="grow">Point size <input id="pointSize" type="range" min="1" max="12" step=".5" value="3"></label></div><div class="row"><button id="resetView" class="grow">Reset View</button><button id="clearSelection">Clear</button></div></div><div class="section"><h3>Log</h3><div id="log" class="log"></div></div></aside>
+<aside class="side"><div class="section"><h3>Data</h3><input id="fileInput" class="file" type="file" multiple accept=".ply,.pt,.npy"><input id="appendInput" class="file" type="file" multiple accept=".ply,.pt,.npy" style="display:none"><input id="frameInput" class="file" type="file" multiple accept=".pt,.npy" webkitdirectory directory style="display:none"><div id="progress" class="small"></div></div><div class="section"><h3>Parts</h3><div id="parts"></div><div class="row"><button id="newPart" class="grow">Create Part</button><button id="deletePart">Delete</button></div></div><div class="section"><h3>Viewport</h3><div class="row"><label class="grow">Point size <input id="pointSize" type="range" min="1" max="12" step=".5" value="3"></label></div><div class="row"><button id="resetView" class="grow">Reset View</button><button id="clearSelection">Clear</button></div></div><div class="section"><h3>Log</h3><div id="log" class="log"></div></div></aside>
 <main id="viewport" class="viewport"><div class="hint">拖拽矩形框选点 · 左键旋转 · 右键平移 · 滚轮缩放</div><div id="selection" class="selection"></div></main>
 <aside class="right"><div class="section"><h3>Part 属性</h3><div class="row"><label class="grow small">名称<input id="partName" type="text"></label></div><div class="small">Pivot</div><div class="kv"><label>X<input id="px" type="number" step=".01"></label><label>Y<input id="py" type="number" step=".01"></label><label>Z<input id="pz" type="number" step=".01"></label></div><button id="savePart" style="margin-top:8px;width:100%">保存属性</button></div><div class="section"><h3>关键帧</h3><div class="row"><label class="grow small">帧<input id="kfFrame" type="number" min="0" value="0"></label><button id="addKey">添加/更新关键帧</button></div><div class="small">平移</div><div class="kv"><label>X<input id="tx" type="number" step=".01" value="0"></label><label>Y<input id="ty" type="number" step=".01" value="0"></label><label>Z<input id="tz" type="number" step=".01" value="0"></label></div><div class="small" style="margin-top:8px">旋转 (弧度)</div><div class="kv"><label>X<input id="rx" type="number" step=".01" value="0"></label><label>Y<input id="ry" type="number" step=".01" value="0"></label><label>Z<input id="rz" type="number" step=".01" value="0"></label></div><div id="keyList" class="small" style="margin-top:8px"></div></div><div class="section"><h3>动画设置</h3><div class="row"><label class="grow small">总帧数<input id="numFrames" type="number" min="1" max="10000" value="1"></label><label class="grow small">插值<select id="interp"><option value="linear">Linear</option><option value="catmull-rom">Catmull-Rom</option></select></label></div><button id="saveSettings" style="width:100%">应用设置</button></div></aside>
 <section class="timeline"><div class="timeline-head"><button id="play">播放</button><button id="stop">停止</button><span>当前帧</span><input id="currentFrame" type="number" min="0" max="0" value="0"><input id="scrub" class="grow" type="range" min="0" max="0" value="0"><span id="frameLabel" class="small">0 / 0</span></div><div id="track" class="track"><div class="ticks"><span>0</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div><div id="playhead" class="playhead" style="left:0%"></div></div></section></div>
