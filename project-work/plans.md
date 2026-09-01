@@ -1,5 +1,20 @@
 # Part-Level 4DGS Animation Editor Plan
 
+## Current Request: Comparison center alignment (2026-09-01)
+
+- [x] Create a recoverable Git checkpoint before the Comparison center-align implementation (`e74ba89`).
+- [x] Add a Comparison-only `Center align` button that moves the selected cloud's current centroid to the other cloud's current centroid.
+- [x] Preserve existing rotation/scale values, synchronize TX/TY/TZ controls, expand translation bounds when alignment exceeds the default slider range, and update Dual view geometry.
+- [x] Run frontend syntax parsing, Python compilation, functional centroid/transform regression, diff validation, and focused code review.
+
+2026-09-01 verification completed:
+
+- `py -3.13 -m py_compile app.py`
+- Active inline scripts parsed with Node `new Function`.
+- Functional DOM/Three stub regression confirmed A-to-B and B-to-A center alignment, current-position centroid math, transform serialization, translation-bound expansion, Dual view synchronization, and disabled state when a cloud is missing.
+- `git diff --check`
+- Focused review confirmed the feature is frontend-only and reuses the existing Comparison transform path for preview, export, and evaluation.
+
 ## Current Request: Export Original or Edited Colors (2026-08-19)
 
 - [x] Create a recoverable Git checkpoint before changing export color handling (`1d21d81`).

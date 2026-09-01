@@ -179,6 +179,16 @@ static points from SH DC. Verify this work using Flask's test client and in-memo
 - Comparison transform controls expose both range sliders and numeric inputs. Translation sliders use `-5..5`
   with `.01` steps; rotation sliders use `-180..180` with `.5` degree steps, and both input types stay synchronized.
 
+## Comparison Center Alignment Notes (2026-09-01)
+
+- The Comparison panel's `Center align` button uses the currently displayed positions of all points in
+  the selected cloud and the other cloud, so existing rotation, scale, and translation are included.
+- It adds `referenceCenter - selectedCenter` to only the selected cloud's `tx/ty/tz`, preserves rotation and
+  scale, and applies the result through `applyComparisonTransform()`. This keeps single view, Dual view,
+  transformed PLY export, and evaluation serialization synchronized without changing backend Comparison state.
+- TX/TY/TZ number and range controls are updated together. If an aligned translation exceeds the default
+  `-5..5` range, the affected control bounds expand to include the value rather than clamping it.
+
 ## Comparison Evaluate Notes (2026-08-19)
 
 - `POST /api/comparison/evaluate` keeps Comparison isolated from editor `STATE`. Cloud A is always Prediction
