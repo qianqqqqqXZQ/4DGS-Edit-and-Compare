@@ -259,3 +259,19 @@ static points from SH DC. Verify this work using Flask's test client and in-memo
 - The guarded `comparisonBackBtn` is inserted into the top `.toolbar`, immediately before `orbitBtn`.
 - CSS keeps it hidden in editor mode and visible only under `.comparison-active`; its click handler still calls
   `exitComparison()`.
+
+## Comparison Layout And Export Notes (2026-09-01)
+
+- `static/editor.html` keeps `comparisonBtn` as the first toolbar button and uses a static `comparisonBackBtn`.
+  In editor mode the back button is hidden; in Comparison mode every toolbar button except Back to Editor is
+  hidden, so the mode has a clear enter/exit boundary.
+- Comparison mode uses a two-column app grid with a desktop-only `comparisonResizer`. Its width is clamped to
+  `220..520px` while preserving at least `360px` for the viewport, adjusted with Pointer Events or 10px arrow
+  key steps, and stored under the `comparison-left-width` local-storage key. Mobile keeps the overlay panel and
+  hides the divider.
+- `POST /api/comparison/export` reads isolated `COMPARISON_STATE`, applies the submitted degree-based transform
+  with `_comparison_transformed_xyz()`, and uses `_comparison_colors()` for explicit RGB, SH-derived, or neutral
+  fallback colors. The response is an in-memory attachment named `<source>.transformed.<format>`.
+- Comparison export formats are generic point-cloud payloads: binary little-endian PLY with XYZ float32/RGB
+  uint8, NPY float32 `(N, 6)` with XYZ+RGB where RGB is `[0,1]`, or a raw `torch.float32` `(N, 6)` tensor.
+  These exports intentionally do not preserve Gaussian attributes.

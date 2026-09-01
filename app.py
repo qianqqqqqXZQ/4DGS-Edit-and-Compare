@@ -762,12 +762,33 @@ def _comparison_colors(source: Dict[str, Any]) -> np.ndarray:
     colors = source.get("colors") if source.get("has_colors") else None
     if colors is not None:
         normalised = _normalise_rgb(colors, int(source.get("n_vertices", 0)))
-        if normalised is not None:
+        if normalised is not None and np.isfinite(normalised).all():
             return normalised
-    sh0 = np.asarray(source.get("sh0"), dtype=np.float64)
+    try:
+        sh0 = np.asarray(source.get("sh0"), dtype=np.float64)
+    except (TypeError, ValueError):
+        sh0 = np.zeros((0, 3), dtype=np.float64)
     if sh0.shape == (int(source.get("n_vertices", 0)), 3):
-        return sh_to_rgb(sh0)
+        derived = sh_to_rgb(sh0)
+        if np.isfinite(derived).all():
+            return derived
     return np.full((int(source.get("n_vertices", 0)), 3), 0.5, dtype=np.float64)
+
+
+def _comparison_source_arrays(source: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+    """Validate and return finite Comparison XYZ/RGB arrays."""
+    try:
+        xyz = np.asarray(source.get("xyz"), dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Comparison point clouds must have shape (N, 3)") from exc
+    if xyz.ndim != 2 or xyz.shape[1] != 3:
+        raise ValueError("Comparison point clouds must have shape (N, 3)")
+    if not np.isfinite(xyz).all():
+        raise ValueError("Comparison XYZ coordinates must be finite")
+    colors = np.asarray(_comparison_colors({**source, "n_vertices": len(xyz)}), dtype=np.float64)
+    if colors.shape != (len(xyz), 3) or not np.isfinite(colors).all():
+        raise ValueError("Comparison RGB colors must be finite")
+    return xyz, colors
 
 
 @app.get("/")
@@ -991,7 +1012,8 @@ def api_comparison_upload():
             if not payload:
                 raise ValueError(f"Empty point-cloud file: {filename}")
             source = _load_pointcloud_bytes(payload, extension)
-            if int(source.get("n_vertices", 0)) <= 0:
+            xyz, _ = _comparison_source_arrays(source)
+            if len(xyz) <= 0:
                 raise ValueError(f"Point-cloud file has no vertices: {filename}")
             parsed.append((filename, source))
     except Exception as exc:
@@ -1024,8 +1046,12 @@ def api_comparison_cloud(cloud_id: str):
         if not info:
             return jsonify({"error": "No comparison session is loaded"}), 400
         source = info["source"]
-        xyz = np.asarray(source["xyz"], dtype="<f4")
-        colors = np.asarray(_comparison_colors(source), dtype="<f4")
+        try:
+            xyz, colors = _comparison_source_arrays(source)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        xyz = np.asarray(xyz, dtype="<f4")
+        colors = np.asarray(colors, dtype="<f4")
     if len(xyz) != len(colors):
         return jsonify({"error": "Comparison point-cloud color length mismatch"}), 500
     buf = io.BytesIO()
@@ -1040,6 +1066,107 @@ def api_comparison_delete():
     with STATE_LOCK:
         COMPARISON_STATE["clouds"] = {"a": None, "b": None}
     return jsonify({"ok": True})
+
+
+def _clean_comparison_export_transform(value: Any) -> Dict[str, float]:
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise ValueError("transform must be an object")
+    transform: Dict[str, float] = {}
+    for name in ("tx", "ty", "tz", "rx", "ry", "rz"):
+        try:
+            number = float(value.get(name, 0.0))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"transform.{name} must be a finite number") from exc
+        if not np.isfinite(number):
+            raise ValueError(f"transform.{name} must be a finite number")
+        transform[name] = number
+    transform["scale"] = _clean_scale(value.get("scale", 1.0))
+    return transform
+
+
+def _comparison_ply_bytes(points: np.ndarray, colors: np.ndarray) -> bytes:
+    points = np.asarray(points, dtype=np.float32).reshape((-1, 3))
+    colors_u8 = np.rint(np.clip(colors, 0.0, 1.0) * 255.0).astype(np.uint8).reshape((-1, 3))
+    vertices = np.empty(len(points), dtype=[
+        ("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
+        ("red", "u1"), ("green", "u1"), ("blue", "u1"),
+    ])
+    vertices["x"], vertices["y"], vertices["z"] = points.T
+    vertices["red"], vertices["green"], vertices["blue"] = colors_u8.T
+    header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        f"element vertex {len(points)}\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        "property uchar red\n"
+        "property uchar green\n"
+        "property uchar blue\n"
+        "end_header\n"
+    ).encode("ascii")
+    return header + vertices.tobytes(order="C")
+
+
+@app.post("/api/comparison/export")
+def api_comparison_export():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+    cloud_id = str(body.get("cloud_id", "")).strip().lower()
+    export_format = str(body.get("format", "")).strip().lower().lstrip(".")
+    if cloud_id not in ("a", "b"):
+        return jsonify({"error": "cloud_id must be 'a' or 'b'"}), 400
+    if export_format not in ("ply", "pt", "npy"):
+        return jsonify({"error": "format must be 'ply', 'pt', or 'npy'"}), 400
+    try:
+        transform = _clean_comparison_export_transform(body.get("transform"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    with STATE_LOCK:
+        info = COMPARISON_STATE["clouds"].get(cloud_id)
+        if not info:
+            return jsonify({"error": "No comparison session is loaded"}), 400
+        source = info["source"]
+        try:
+            source_xyz, colors = _comparison_source_arrays(source)
+            points = _comparison_transformed_xyz({**source, "xyz": source_xyz}, transform)
+        except (TypeError, ValueError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        source_filename = str(info.get("filename") or f"cloud_{cloud_id}")
+
+    if len(points) != len(colors):
+        return jsonify({"error": "Comparison point-cloud color length mismatch"}), 500
+    float32_limit = np.finfo(np.float32).max
+    if not np.isfinite(points).all() or np.any(np.abs(points) > float32_limit):
+        return jsonify({"error": "Transformed Comparison coordinates cannot be represented as float32"}), 400
+    if not np.isfinite(colors).all():
+        return jsonify({"error": "Comparison RGB colors must be finite"}), 400
+    try:
+        point_data = np.ascontiguousarray(np.column_stack((points, np.clip(colors, 0.0, 1.0))), dtype=np.float32)
+    except MemoryError:
+        return jsonify({"error": "Comparison export is too large to fit in memory"}), 413
+    if not np.isfinite(point_data).all():
+        return jsonify({"error": "Comparison export contains non-finite values"}), 400
+    output = io.BytesIO()
+    if export_format == "ply":
+        output.write(_comparison_ply_bytes(point_data[:, :3], point_data[:, 3:]))
+    elif export_format == "npy":
+        np.save(output, point_data, allow_pickle=False)
+    else:
+        if torch is None:
+            return jsonify({"error": "PyTorch is required to export .pt files"}), 400
+        try:
+            torch.save(torch.from_numpy(point_data), output)
+        except Exception as exc:
+            return jsonify({"error": f"Unable to export .pt file: {exc}"}), 400
+    output.seek(0)
+    stem = Path(os.path.basename(source_filename)).stem or f"cloud_{cloud_id}"
+    filename = f"{stem}.transformed.{export_format}"
+    return send_file(output, as_attachment=True, download_name=filename, mimetype="application/octet-stream")
 
 
 _COMPARISON_METRIC_NAMES = {

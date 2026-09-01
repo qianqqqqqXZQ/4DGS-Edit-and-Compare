@@ -1,5 +1,15 @@
 # Part-Level 4DGS Animation Editor Plan
 
+## Current Request: Comparison layout and multi-format export (2026-09-01)
+
+- [x] Create a recoverable Git checkpoint before implementation (`d1de3fe`).
+- [ ] Make Comparison the leftmost editor toolbar action and show only Back to Editor while Comparison is active.
+- [ ] Add a desktop-only, persistent, keyboard-accessible resize handle for the Comparison left panel.
+- [ ] Replace the overflowing Comparison export action with a format selector and one export button.
+- [ ] Add transformed selected-cloud export for binary PLY, raw Tensor PT, and N x 6 float32 NPY.
+- [ ] Update repository documentation and project notes for the new layout and export contract.
+- [ ] Run backend, frontend syntax, desktop/mobile browser, diff, and focused code-review checks.
+
 ## Current Request: Comparison center alignment (2026-09-01)
 
 - [x] Create a recoverable Git checkpoint before the Comparison center-align implementation (`e74ba89`).

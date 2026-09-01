@@ -11,7 +11,7 @@ The project was designed for reconstruction and LiDAR-alignment work, where a mo
 - **4DGS support:** Load `.ply` point clouds, `.npy` arrays, gsplat-style `.pt` checkpoints, raw PyTorch tensors, or a directory of `.pt`/`.npy` frames as a looping 4DGS Part.
 - **Cloud-to-cloud comparison:** Load Cloud A and Cloud B in an isolated comparison workspace, view them individually, overlaid, or in synchronized dual viewports.
 - **Alignment and evaluation:** Apply independent translation, ZYX rotation, and centroid-preserving scale to each comparison cloud. Generate Markdown reports with Accuracy, Completeness, Chamfer Distance, F-Score, AUC, and optional normal consistency.
-- **Export-ready output:** Export a transformed comparison cloud as binary PLY, the current editor frame as `.pt`, or every timeline frame as a batch export. New workspaces default to one frame.
+- **Export-ready output:** Export a transformed comparison cloud as binary `.ply`, a raw point-cloud `.pt`, or an `.npy` array, plus the current editor frame as a Gaussian `.pt` or every timeline frame as a batch export. New workspaces default to one frame.
 
 ## What You Can Do
 
@@ -19,7 +19,7 @@ The project was designed for reconstruction and LiDAR-alignment work, where a mo
 2. Use rectangle selection to isolate vertices, create new Parts, set a centroid pivot, and make precise pose adjustments.
 3. Add keyframes and scrub or play the timeline to inspect interpolated motion.
 4. Import a server-side 4DGS frame directory and combine dynamic content with static edited geometry.
-5. Switch to Comparison mode to align two independent point clouds, inspect them in dual view, calculate reconstruction metrics, and export the aligned result.
+5. Switch to Comparison mode to align two independent point clouds, inspect them in dual view, calculate reconstruction metrics, and export the aligned result as `.ply`, `.pt`, or `.npy`.
 
 ## Supported Inputs
 
@@ -44,6 +44,22 @@ Comparison mode treats **Cloud A as the prediction** and **Cloud B as the ground
 - PCA-estimated Normal Consistency, where the input neighborhoods are sufficient and non-degenerate
 
 Reports are saved as Markdown under `generated/evaluations/` and downloaded automatically by the interface.
+
+## Comparison Export
+
+Comparison mode is a separate workspace. Its toolbar entry is the leftmost editor action; once active,
+the top toolbar keeps only **Back to Editor**. On desktop, drag the divider at the right edge of the
+Comparison panel to resize it. The width is remembered locally and the divider is hidden on mobile.
+
+`POST /api/comparison/export` exports the selected Cloud A or Cloud B after the current centroid-based
+scale, ZYX rotation, and translation. The format selector supports:
+
+- `.ply`: binary little-endian XYZ float32 plus RGB uint8.
+- `.npy`: float32 array shaped `(N, 6)` with XYZ followed by RGB in `[0, 1]`.
+- `.pt`: raw `torch.float32` tensor shaped `(N, 6)` with the same XYZ+RGB columns as `.npy`.
+
+Comparison `.pt` and `.npy` exports are generic point-cloud files; they do not preserve Gaussian
+quaternions, scales, opacity, or spherical-harmonic attributes.
 
 ## Architecture
 
@@ -137,7 +153,7 @@ The browser interface is backed by a small JSON/binary REST API. The principal r
 - `GET /api/state`, `GET /api/pointcloud`, and `GET /api/frame/<frame>`
 - `GET/POST/PUT/DELETE /api/parts...` for Part management and vertex assignment
 - `GET/POST/DELETE /api/keyframes/<pid>...` and `GET/PUT /api/settings`
-- `POST /api/comparison`, `GET /api/comparison/a`, `GET /api/comparison/b`, and `POST /api/comparison/evaluate`
+- `POST /api/comparison`, `GET /api/comparison/a`, `GET /api/comparison/b`, `POST /api/comparison/evaluate`, and `POST /api/comparison/export`
 - `POST /api/export`, `GET /api/export/status`, and `POST /api/export_current` (`color_mode` accepts `original` or `edited`; original source RGB is the default)
 
 Binary point-cloud endpoints return compact XYZ, RGB, and Part-ID payloads for the local renderer. Comparison data is deliberately kept separate from the active editor workspace, so comparison uploads never alter Parts, animation tracks, or editor exports.
