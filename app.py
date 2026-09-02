@@ -78,7 +78,6 @@ STATE_LOCK = threading.RLock()
 
 # Comparison data is deliberately kept outside the editor STATE so a comparison
 # upload cannot change Parts, keyframes, exports, or the active workspace.
-_COMPARISON_SOR_DEFAULTS = {"neighbors": 50, "stddev_multiplier": 1.0}
 COMPARISON_STATE: Dict[str, Any] = {"clouds": {"a": None, "b": None}}
 
 
@@ -792,132 +791,6 @@ def _comparison_source_arrays(source: Dict[str, Any]) -> Tuple[np.ndarray, np.nd
     return xyz, colors
 
 
-def _comparison_default_sor_state() -> Dict[str, Any]:
-    return {
-        "enabled": False,
-        "neighbors": int(_COMPARISON_SOR_DEFAULTS["neighbors"]),
-        "stddev_multiplier": float(_COMPARISON_SOR_DEFAULTS["stddev_multiplier"]),
-        "effective_neighbors": None,
-        "threshold": None,
-        "original_n_vertices": 0,
-        "n_vertices": 0,
-        "removed_vertices": 0,
-    }
-
-
-def _comparison_active_arrays(info: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
-    """Return the currently active Comparison XYZ/RGB arrays."""
-    xyz, colors = _comparison_source_arrays(info["source"])
-    indices = info.get("active_indices")
-    if indices is None:
-        return xyz, colors
-    indices = np.asarray(indices, dtype=np.int64)
-    return xyz[indices], colors[indices]
-
-
-def _clean_comparison_sor_parameters(value: Any) -> Tuple[int, float]:
-    if value is None:
-        value = {}
-    if not isinstance(value, dict):
-        raise ValueError("SOR cloud parameters must be an object")
-    raw_neighbors = value.get("neighbors", _COMPARISON_SOR_DEFAULTS["neighbors"])
-    try:
-        neighbors_number = float(raw_neighbors)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("SOR neighbors must be a finite integer >= 1") from exc
-    if not np.isfinite(neighbors_number) or neighbors_number < 1 or not neighbors_number.is_integer():
-        raise ValueError("SOR neighbors must be a finite integer >= 1")
-    raw_multiplier = value.get("stddev_multiplier", _COMPARISON_SOR_DEFAULTS["stddev_multiplier"])
-    try:
-        stddev_multiplier = float(raw_multiplier)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("SOR stddev_multiplier must be a finite number >= 0") from exc
-    if not np.isfinite(stddev_multiplier) or stddev_multiplier < 0:
-        raise ValueError("SOR stddev_multiplier must be a finite number >= 0")
-    return int(neighbors_number), stddev_multiplier
-
-
-def _comparison_knn_mean_distances(points: np.ndarray, neighbors: int, source_block_size: int = 512,
-                                   target_block_size: int = 4096) -> Tuple[np.ndarray, int]:
-    """Return each point's mean distance to its K same-cloud neighbours."""
-    points = np.asarray(points, dtype=np.float64).reshape((-1, 3))
-    if len(points) < 2:
-        return np.zeros(len(points), dtype=np.float64), 0
-    effective_neighbors = min(int(neighbors), len(points) - 1)
-    means = np.empty(len(points), dtype=np.float64)
-    for start in range(0, len(points), source_block_size):
-        stop = min(start + source_block_size, len(points))
-        block = points[start:stop]
-        block_size = stop - start
-        best_squared = np.full((block_size, effective_neighbors), np.inf, dtype=np.float64)
-        row_indices = np.arange(start, stop)
-        block_sq = np.sum(block * block, axis=1)[:, None]
-        for target_start in range(0, len(points), target_block_size):
-            target_stop = min(target_start + target_block_size, len(points))
-            target_block = points[target_start:target_stop]
-            squared = block_sq + np.sum(target_block * target_block, axis=1)[None, :]
-            squared -= 2.0 * block @ target_block.T
-            squared = np.maximum(squared, 0.0)
-            local_rows = row_indices - target_start
-            inside = (local_rows >= 0) & (local_rows < len(target_block))
-            squared[np.flatnonzero(inside), local_rows[inside]] = np.inf
-            take = min(effective_neighbors, len(target_block))
-            local = np.argpartition(squared, take - 1, axis=1)[:, :take]
-            local_squared = np.take_along_axis(squared, local, axis=1)
-            combined = np.concatenate((best_squared, local_squared), axis=1)
-            best = np.argpartition(combined, effective_neighbors - 1, axis=1)[:, :effective_neighbors]
-            best_squared = np.take_along_axis(combined, best, axis=1)
-        means[start:stop] = np.mean(np.sqrt(best_squared), axis=1)
-    return means, effective_neighbors
-
-
-def _comparison_sor_filter(points: np.ndarray, neighbors: int, stddev_multiplier: float) -> Tuple[np.ndarray, Dict[str, Any]]:
-    """Compute a standard Statistical Outlier Removal mask for one cloud."""
-    points = np.asarray(points, dtype=np.float64).reshape((-1, 3))
-    count = len(points)
-    mean_distances, effective_neighbors = _comparison_knn_mean_distances(points, neighbors)
-    if count < 2:
-        return np.ones(count, dtype=bool), {
-            "effective_neighbors": 0,
-            "threshold": None,
-            "mean_distance": None,
-            "std_distance": None,
-        }
-    mean_distance = float(np.mean(mean_distances))
-    std_distance = float(np.std(mean_distances))
-    threshold = mean_distance + float(stddev_multiplier) * std_distance
-    mask = np.isfinite(mean_distances) & (mean_distances <= threshold)
-    if not np.any(mask):
-        mask = np.ones(count, dtype=bool)
-    return mask, {
-        "effective_neighbors": effective_neighbors,
-        "threshold": threshold,
-        "mean_distance": mean_distance,
-        "std_distance": std_distance,
-    }
-
-
-def _comparison_sor_metadata(cloud_id: str, info: Dict[str, Any]) -> Dict[str, Any]:
-    sor = dict(info.get("sor") or _comparison_default_sor_state())
-    original_n = int(info.get("original_n_vertices", info.get("n_vertices", 0)))
-    active_indices = info.get("active_indices")
-    active_n = original_n if active_indices is None else int(len(active_indices))
-    sor.update({
-        "original_n_vertices": original_n,
-        "n_vertices": active_n,
-        "removed_vertices": original_n - active_n,
-    })
-    return {
-        "id": cloud_id,
-        "filename": info["filename"],
-        "n_vertices": active_n,
-        "original_n_vertices": original_n,
-        "removed_vertices": original_n - active_n,
-        "has_colors": bool(info.get("has_colors", False)),
-        "sor": sor,
-    }
-
-
 @app.get("/")
 def index():
     editor_path = os.path.join(BASE_DIR, "static", "editor.html")
@@ -1151,15 +1024,16 @@ def api_comparison_upload():
             cloud_id: {
                 "filename": filename,
                 "source": source,
-                "original_n_vertices": int(source["n_vertices"]),
-                "active_indices": None,
+                "n_vertices": int(source["n_vertices"]),
                 "has_colors": bool(source.get("has_colors", False)),
-                "sor": _comparison_default_sor_state(),
             }
             for cloud_id, (filename, source) in zip(("a", "b"), parsed)
         }
-        clouds = [_comparison_sor_metadata(cloud_id, info)
-                  for cloud_id, info in COMPARISON_STATE["clouds"].items()]
+        clouds = [
+            {"id": cloud_id, "filename": info["filename"], "n_vertices": info["n_vertices"],
+             "has_colors": info["has_colors"]}
+            for cloud_id, info in COMPARISON_STATE["clouds"].items()
+        ]
     return jsonify({"ok": True, "clouds": clouds})
 
 
@@ -1173,7 +1047,7 @@ def api_comparison_cloud(cloud_id: str):
             return jsonify({"error": "No comparison session is loaded"}), 400
         source = info["source"]
         try:
-            xyz, colors = _comparison_active_arrays(info)
+            xyz, colors = _comparison_source_arrays(source)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         xyz = np.asarray(xyz, dtype="<f4")
@@ -1192,68 +1066,6 @@ def api_comparison_delete():
     with STATE_LOCK:
         COMPARISON_STATE["clouds"] = {"a": None, "b": None}
     return jsonify({"ok": True})
-
-
-@app.post("/api/comparison/sor")
-def api_comparison_sor():
-    body = request.get_json(silent=True)
-    if not isinstance(body, dict) or not isinstance(body.get("clouds"), dict):
-        return jsonify({"error": "clouds must be an object"}), 400
-    try:
-        parameters = {
-            cloud_id: _clean_comparison_sor_parameters(body["clouds"].get(cloud_id))
-            for cloud_id in ("a", "b")
-        }
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    with STATE_LOCK:
-        if not COMPARISON_STATE["clouds"].get("a") or not COMPARISON_STATE["clouds"].get("b"):
-            return jsonify({"error": "Load both comparison point clouds before applying SOR"}), 400
-        results = {}
-        computed = {}
-        try:
-            for cloud_id, (neighbors, stddev_multiplier) in parameters.items():
-                info = COMPARISON_STATE["clouds"][cloud_id]
-                source_xyz, _ = _comparison_source_arrays(info["source"])
-                mask, details = _comparison_sor_filter(source_xyz, neighbors, stddev_multiplier)
-                active_indices = np.flatnonzero(mask).astype(np.int64, copy=False)
-                computed[cloud_id] = (active_indices, {
-                    "enabled": True,
-                    "neighbors": neighbors,
-                    "stddev_multiplier": stddev_multiplier,
-                    "effective_neighbors": int(details["effective_neighbors"]),
-                    "threshold": details["threshold"],
-                    "mean_distance": details["mean_distance"],
-                    "std_distance": details["std_distance"],
-                    "original_n_vertices": int(len(source_xyz)),
-                    "n_vertices": int(len(active_indices)),
-                    "removed_vertices": int(len(source_xyz) - len(active_indices)),
-                })
-            for cloud_id, (active_indices, sor_state) in computed.items():
-                info = COMPARISON_STATE["clouds"][cloud_id]
-                info["active_indices"] = active_indices
-                info["sor"] = sor_state
-                results[cloud_id] = _comparison_sor_metadata(cloud_id, info)
-        except (TypeError, ValueError, MemoryError) as exc:
-            return jsonify({"error": f"Unable to apply SOR: {exc}"}), 400
-    return jsonify({"ok": True, "clouds": results})
-
-
-@app.delete("/api/comparison/sor")
-def api_comparison_sor_reset():
-    with STATE_LOCK:
-        for info in COMPARISON_STATE["clouds"].values():
-            if not info:
-                continue
-            info["active_indices"] = None
-            info["sor"] = _comparison_default_sor_state()
-        clouds = {
-            cloud_id: _comparison_sor_metadata(cloud_id, info)
-            for cloud_id, info in COMPARISON_STATE["clouds"].items()
-            if info
-        }
-    return jsonify({"ok": True, "clouds": clouds})
 
 
 def _clean_comparison_export_transform(value: Any) -> Dict[str, float]:
@@ -1370,13 +1182,6 @@ _COMPARISON_METRIC_NAMES = {
 def _comparison_transformed_xyz(source: Dict[str, Any], transform: Any) -> np.ndarray:
     """Apply the frontend Comparison transform around the source centroid."""
     xyz = np.asarray(source.get("xyz"), dtype=np.float64).reshape((-1, 3))
-    return _comparison_transform_xyz_with_pivot(xyz, transform, xyz)
-
-
-def _comparison_transform_xyz_with_pivot(xyz: np.ndarray, transform: Any, pivot_source: np.ndarray) -> np.ndarray:
-    """Transform XYZ using a stable pivot source, which may differ from active points."""
-    xyz = np.asarray(xyz, dtype=np.float64).reshape((-1, 3))
-    pivot_source = np.asarray(pivot_source, dtype=np.float64).reshape((-1, 3))
     raw = transform if isinstance(transform, dict) else {}
     values = []
     for name in ("tx", "ty", "tz", "rx", "ry", "rz"):
@@ -1391,17 +1196,9 @@ def _comparison_transform_xyz_with_pivot(xyz: np.ndarray, transform: Any, pivot_
     scale = _clean_scale(raw.get("scale", 1.0))
     if not len(xyz):
         return xyz.copy()
-    if len(pivot_source) == 0:
-        pivot_source = xyz
-    pivot = np.mean(pivot_source, axis=0)
+    pivot = np.mean(xyz, axis=0)
     rotation = euler_to_rotation_matrix(rx, ry, rz)
     return ((xyz - pivot) * scale) @ rotation.T + pivot + np.asarray([tx, ty, tz], dtype=np.float64)
-
-
-def _comparison_active_transformed_xyz(info: Dict[str, Any], transform: Any) -> np.ndarray:
-    active_xyz, _ = _comparison_active_arrays(info)
-    raw_xyz, _ = _comparison_source_arrays(info["source"])
-    return _comparison_transform_xyz_with_pivot(active_xyz, transform, raw_xyz)
 
 
 def _comparison_nearest(source: np.ndarray, target: np.ndarray, *, return_indices: bool = False,
@@ -1497,8 +1294,7 @@ def _comparison_fscore(distances_p: np.ndarray, distances_g: np.ndarray, thresho
 
 def _comparison_markdown(filename_a: str, filename_b: str, points_a: np.ndarray, points_b: np.ndarray,
                          transforms: Dict[str, Any], tau: float, tau_max: float, auc_samples: int,
-                         selected: List[str], values: Dict[str, Any], normal_note: Optional[str],
-                         sor_states: Dict[str, Any]) -> str:
+                         selected: List[str], values: Dict[str, Any], normal_note: Optional[str]) -> str:
     def fmt(value: Any) -> str:
         if value is None:
             return "N/A"
@@ -1522,32 +1318,11 @@ def _comparison_markdown(filename_a: str, filename_b: str, points_a: np.ndarray,
         f"- AUC samples: `{auc_samples}` equally spaced thresholds",
         "- Normal estimation: same-cloud k-nearest-neighbour PCA (`k=16`)",
         "",
-        "### Statistical Outlier Removal (SOR)",
-        "",
-        "| Cloud | Enabled | Neighbours | Effective neighbours | Stddev multiplier | Threshold | Original points | Retained points | Removed points |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-    ]
-    for cloud_id in ("a", "b"):
-        sor = sor_states.get(cloud_id) if isinstance(sor_states, dict) else {}
-        sor = sor if isinstance(sor, dict) else {}
-        lines.append("| Cloud {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
-            cloud_id.upper(),
-            "yes" if sor.get("enabled") else "no",
-            fmt(sor.get("neighbors")),
-            fmt(sor.get("effective_neighbors")),
-            fmt(sor.get("stddev_multiplier")),
-            fmt(sor.get("threshold")),
-            fmt(sor.get("original_n_vertices")),
-            fmt(sor.get("n_vertices")),
-            fmt(sor.get("removed_vertices")),
-        ))
-    lines.extend([
-        "",
         "### Applied transforms",
         "",
         "| Cloud | tx | ty | tz | rx (deg) | ry (deg) | rz (deg) | scale |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-    ])
+    ]
     for cloud_id in ("a", "b"):
         tf = transforms.get(cloud_id) if isinstance(transforms, dict) else {}
         tf = tf if isinstance(tf, dict) else {}
@@ -1604,15 +1379,11 @@ def api_comparison_evaluate():
             return jsonify({"error": "Load both comparison point clouds before evaluating"}), 400
         transforms = body.get("transforms") if isinstance(body.get("transforms"), dict) else {}
         try:
-            points_a = _comparison_active_transformed_xyz(cloud_a, transforms.get("a"))
-            points_b = _comparison_active_transformed_xyz(cloud_b, transforms.get("b"))
+            points_a = _comparison_transformed_xyz(cloud_a["source"], transforms.get("a"))
+            points_b = _comparison_transformed_xyz(cloud_b["source"], transforms.get("b"))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         filename_a, filename_b = cloud_a["filename"], cloud_b["filename"]
-        sor_states = {
-            cloud_id: _comparison_sor_metadata(cloud_id, info)["sor"]
-            for cloud_id, info in (("a", cloud_a), ("b", cloud_b))
-        }
     try:
         distances_p, nearest_gt = _comparison_nearest(points_a, points_b, return_indices=True)
         distances_g, _ = _comparison_nearest(points_b, points_a)
@@ -1644,7 +1415,7 @@ def api_comparison_evaluate():
                 dots = np.abs(np.sum(normals_p * normals_g[nearest_gt], axis=1))
                 values["normal_consistency"] = float(np.mean(np.clip(dots, 0.0, 1.0)))
         markdown = _comparison_markdown(filename_a, filename_b, points_a, points_b, transforms, tau, tau_max,
-                                        auc_samples, selected, values, normal_note, sor_states)
+                                        auc_samples, selected, values, normal_note)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S_%f")

@@ -10,7 +10,7 @@ The project was designed for reconstruction and LiDAR-alignment work, where a mo
 - **Keyframed 4D editing:** Animate Part transforms along a timeline with linear or Catmull-Rom interpolation, then preview the result in the browser.
 - **4DGS support:** Load `.ply` point clouds, `.npy` arrays, gsplat-style `.pt` checkpoints, raw PyTorch tensors, or a directory of `.pt`/`.npy` frames as a looping 4DGS Part.
 - **Cloud-to-cloud comparison:** Load Cloud A and Cloud B in an isolated comparison workspace, view them individually, overlaid, or in synchronized dual viewports.
-- **Alignment and evaluation:** Apply independent translation, ZYX rotation, and centroid-preserving scale to each comparison cloud. Optionally apply per-cloud Statistical Outlier Removal (SOR) with configurable neighbour counts and standard-deviation multipliers before viewing and evaluation. Generate Markdown reports with Accuracy, Completeness, Chamfer Distance, F-Score, AUC, and optional normal consistency.
+- **Alignment and evaluation:** Apply independent translation, ZYX rotation, and centroid-preserving scale to each comparison cloud. Generate Markdown reports with Accuracy, Completeness, Chamfer Distance, F-Score, AUC, and optional normal consistency.
 - **Export-ready output:** Export a transformed comparison cloud as binary `.ply`, a raw point-cloud `.pt`, or an `.npy` array, plus the current editor frame as a Gaussian `.pt` or every timeline frame as a batch export. New workspaces default to one frame.
 
 ## What You Can Do
@@ -20,12 +20,6 @@ The project was designed for reconstruction and LiDAR-alignment work, where a mo
 3. Add keyframes and scrub or play the timeline to inspect interpolated motion.
 4. Import a server-side 4DGS frame directory and combine dynamic content with static edited geometry.
 5. Switch to Comparison mode to align two independent point clouds, inspect them in dual view, calculate reconstruction metrics, and export the aligned result as `.ply`, `.pt`, or `.npy`.
-
-In Comparison mode, SOR is applied explicitly with **Apply SOR**. Cloud A and Cloud B have
-independent `Neighbours` and `Stddev multiplier` values, defaulting to `50` and `1.0`.
-The filtered points are used by the Comparison viewport and evaluation metrics. **Reset SOR**
-restores all original points. SOR never modifies the uploaded source data and Comparison exports
-continue to contain the complete transformed cloud.
 
 ## Supported Inputs
 
@@ -48,19 +42,6 @@ Comparison mode treats **Cloud A as the prediction** and **Cloud B as the ground
 - F-Score, Precision, and Recall at a configurable threshold
 - Area under the F-Score curve (AUC)
 - PCA-estimated Normal Consistency, where the input neighborhoods are sufficient and non-degenerate
-
-### Statistical Outlier Removal
-
-SOR computes each point's mean distance to its same-cloud `K` nearest neighbours and keeps points
-whose mean distance is no greater than:
-
-```text
-global_mean_distance + stddev_multiplier * global_std_distance
-```
-
-Cloud A and Cloud B use separate parameters. The requested neighbour count is automatically clamped
-to `N - 1`; clouds with fewer than two points are left unchanged. SOR affects display and evaluation
-only. Use **Reset SOR** to restore the complete clouds before another evaluation or inspection.
 
 Reports are saved as Markdown under `generated/evaluations/` and downloaded automatically by the interface.
 
@@ -172,7 +153,7 @@ The browser interface is backed by a small JSON/binary REST API. The principal r
 - `GET /api/state`, `GET /api/pointcloud`, and `GET /api/frame/<frame>`
 - `GET/POST/PUT/DELETE /api/parts...` for Part management and vertex assignment
 - `GET/POST/DELETE /api/keyframes/<pid>...` and `GET/PUT /api/settings`
-- `POST /api/comparison`, `GET /api/comparison/a`, `GET /api/comparison/b`, `POST /api/comparison/sor`, `DELETE /api/comparison/sor`, `POST /api/comparison/evaluate`, and `POST /api/comparison/export`
+- `POST /api/comparison`, `GET /api/comparison/a`, `GET /api/comparison/b`, `POST /api/comparison/evaluate`, and `POST /api/comparison/export`
 - `POST /api/export`, `GET /api/export/status`, and `POST /api/export_current` (`color_mode` accepts `original` or `edited`; original source RGB is the default)
 
 Binary point-cloud endpoints return compact XYZ, RGB, and Part-ID payloads for the local renderer. Comparison data is deliberately kept separate from the active editor workspace, so comparison uploads never alter Parts, animation tracks, or editor exports.
