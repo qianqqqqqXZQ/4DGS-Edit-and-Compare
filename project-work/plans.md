@@ -476,3 +476,12 @@ py -3.13 -m py_compile app.py
 - `git diff --check`
 - Focused review covered extension routing, pickle-disabled NumPy loading, optional RGB fallback behavior, legacy
   multipart 4DGS import, mixed `.pt`/`.npy` frame directories, and preservation of existing `.ply`/`.pt` paths.
+
+## Current Request: Comparison SOR filtering (2026-09-02)
+
+- [x] Create a recoverable Git checkpoint before SOR changes (`16a6f45`).
+- [x] Add chunked Statistical Outlier Removal with independent Cloud A/B parameters and isolated Comparison state.
+- [x] Make active Comparison binary payloads and evaluation use SOR-filtered points while preserving raw points for export.
+- [x] Add SOR Apply/Reset controls, filtered geometry refresh, Dual-view synchronization, and stable transform pivots.
+- [x] Add SOR API/unit regression coverage and document parameters, behavior, and endpoints.
+- [ ] Run final live-server/browser verification and complete the focused code review.

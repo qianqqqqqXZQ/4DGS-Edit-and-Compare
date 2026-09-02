@@ -239,6 +239,30 @@ static points from SH DC. Verify this work using Flask's test client and in-memo
 - Scale controls use `0.1..20` with `.01` steps. The editor control is hidden in Comparison mode; Comparison
   exposes one Scale range/number pair for the selected Cloud A or Cloud B.
 
+## Comparison SOR Notes (2026-09-02)
+
+- Comparison keeps raw source arrays in `COMPARISON_STATE` and stores an `active_indices` array plus SOR
+  metadata per cloud. `GET /api/comparison/a` and `/b` emit active points, while Comparison export always
+  reads the raw source arrays so SOR never removes export data.
+- `POST /api/comparison/sor` accepts independent `neighbors` and `stddev_multiplier` values for Cloud A
+  and Cloud B. It computes same-cloud KNN mean distances with bounded NumPy blocks, clamps K to `N - 1`,
+  and keeps points at or below `global_mean + multiplier * global_std`. `DELETE /api/comparison/sor` clears
+  active indices and restores both complete clouds.
+- Comparison evaluation uses active points but transforms them around each cloud's raw-source centroid.
+  Markdown reports include SOR enabled state, parameters, effective K, threshold, and original/retained/
+  removed point counts.
+- `static/editor.html` maintains immutable `comparisonRawPositions` for stable transform pivots and rebuilds
+  main/Dual-view geometries after Apply SOR or Reset SOR while preserving transforms, visibility, and cameras.
+  Defaults are `50` neighbours and `1.0` standard-deviation multiplier; SOR is only computed after clicking
+  Apply SOR.
+- SOR regression coverage is in `tests/test_comparison_sor.py`. Run:
+
+```powershell
+py -3.13 -m unittest discover -s tests -v
+py -3.13 -m py_compile app.py
+git diff --check
+```
+
 ## Export Color Mode Notes (2026-08-19)
 
 - Static editor state retains normalized source RGB in `STATE["colors"]` plus a per-point `color_valid` mask;
