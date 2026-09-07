@@ -275,3 +275,15 @@ static points from SH DC. Verify this work using Flask's test client and in-memo
 - Comparison export formats are generic point-cloud payloads: binary little-endian PLY with XYZ float32/RGB
   uint8, NPY float32 `(N, 6)` with XYZ+RGB where RGB is `[0,1]`, or a raw `torch.float32` `(N, 6)` tensor.
   These exports intentionally do not preserve Gaussian attributes.
+
+## Comparison Point-count HUD Notes (2026-09-07)
+
+- `static/editor.html` renders one `comparisonPointCounts` HUD in the main Comparison viewport,
+  including Dual view; it is not duplicated inside either Dual pane.
+- `renderComparisonPointCounts()` reads only `comparisonClouds.a/b.n_vertices`, so displayed values
+  remain the original uploaded point counts and do not change with transforms, alignment, ICP/evaluation,
+  or visibility/layout changes.
+- Missing metadata renders `Cloud A: -- pts` and `Cloud B: -- pts`. Comparison cleanup resets the
+  metadata and refreshes the HUD, while the `.comparison-active` CSS rule hides it outside Comparison.
+- The HUD uses `toLocaleString()`, `pointer-events: none`, and a viewport-relative `z-index` above
+  the point/canvas layers. Narrow layouts reduce padding and font size while reserving horizontal space.

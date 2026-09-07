@@ -2,10 +2,22 @@
 
 ## Current Request: Comparison point-count HUD (2026-09-07)
 
-- [ ] Add a Comparison-only upper-right HUD for Cloud A and Cloud B point counts.
-- [ ] Refresh counts from Comparison metadata across loading, mode/layout changes, and cleanup.
-- [ ] Keep the HUD readable on desktop/mobile and above the Dual view canvas.
-- [ ] Run frontend syntax, HTTP/browser smoke, diff, and focused code-review checks.
+- [x] Add a Comparison-only upper-right HUD for Cloud A and Cloud B point counts.
+- [x] Refresh counts from Comparison metadata across loading, mode/layout changes, and cleanup.
+- [x] Keep the HUD readable on desktop/mobile and above the Dual view canvas.
+- [x] Run frontend syntax, HTTP/browser smoke, diff, and focused code-review checks.
+
+2026-09-07 verification completed:
+
+- `py -3.13 -m py_compile app.py`
+- Active `static/editor.html` inline JavaScript parsed successfully with Node.
+- Flask live-server smoke check returned HTTP 200 and served the HUD markup.
+- Browser Comparison check confirmed empty placeholders, fixture counts `Cloud A: 6 pts`
+  and `Cloud B: 4 pts`, stable counts through A-only, B-only, Both, and Dual view,
+  and one HUD with two Dual-view canvases.
+- CSS/DOM review confirmed the HUD is positioned relative to the Comparison viewport,
+  uses `z-index: 5`, has `pointer-events: none`, and is hidden outside Comparison mode.
+- `git diff --check`
 
 ## Current Request: Comparison layout and multi-format export (2026-09-01)
 
