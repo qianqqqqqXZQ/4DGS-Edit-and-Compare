@@ -1303,7 +1303,7 @@ def _comparison_icp(
     max_correspondence_distance: float,
     sample_limit: int,
 ) -> Dict[str, Any]:
-    """Run deterministic point-to-point ICP from the current Comparison transform."""
+    """Run deterministic point-to-point ICP on already transformed XYZ arrays."""
     if cKDTree is None:
         raise ValueError("SciPy is required for Comparison ICP")
     moving = np.asarray(moving, dtype=np.float64).reshape((-1, 3))
@@ -1312,25 +1312,7 @@ def _comparison_icp(
         raise ValueError("Comparison point clouds must not be empty")
     moving_indices = _comparison_sample_indices(len(moving), sample_limit)
     reference_indices = _comparison_sample_indices(len(reference), sample_limit)
-    moving_pivot = np.mean(moving, axis=0)
     moving_sample = moving[moving_indices]
-    initial_rotation = euler_to_rotation_matrix(
-        initial_transform.get("rx", 0),
-        initial_transform.get("ry", 0),
-        initial_transform.get("rz", 0),
-    )
-    initial_scale = float(initial_transform.get("scale", 1.0))
-    initial_translation = np.asarray([
-        initial_transform.get("tx", 0),
-        initial_transform.get("ty", 0),
-        initial_transform.get("tz", 0),
-    ], dtype=np.float64)
-    moving_sample = (
-        (moving_sample - moving_pivot) * initial_scale
-        @ initial_rotation.T
-        + moving_pivot
-        + initial_translation
-    )
     reference_sample = reference[reference_indices]
     reference_tree = cKDTree(reference_sample)
     current = np.array(moving_sample, dtype=np.float64, copy=True)
@@ -1363,8 +1345,7 @@ def _comparison_icp(
                     source_matches - source_center,
                     target_matches - target_center,
                 )
-                display_center = moving_pivot + initial_translation
-                delta_translation = display_center - display_center @ delta_rotation.T
+                delta_translation = source_center - source_center @ delta_rotation.T
             else:
                 delta_rotation = _comparison_kabsch(source_matches, target_matches)
                 delta_translation = np.mean(target_matches, axis=0) - np.mean(source_matches, axis=0) @ delta_rotation.T
@@ -1385,12 +1366,19 @@ def _comparison_icp(
             break
         previous_rmse = rmse
 
-    candidate_rotation = rotation_total @ initial_rotation
-    candidate_translation = (
-        (moving_pivot + initial_translation) @ rotation_total.T
-        + translation_total
-        - moving_pivot
+    initial_rotation = euler_to_rotation_matrix(
+        initial_transform.get("rx", 0),
+        initial_transform.get("ry", 0),
+        initial_transform.get("rz", 0),
     )
+    pivot = np.mean(moving, axis=0) - np.asarray([
+        initial_transform.get("tx", 0),
+        initial_transform.get("ty", 0),
+        initial_transform.get("tz", 0),
+    ], dtype=np.float64)
+    candidate_rotation = rotation_total @ initial_rotation
+    current_center = np.mean(moving, axis=0)
+    candidate_translation = current_center @ rotation_total.T + translation_total - pivot
     candidate_angles = _rotation_matrix_to_euler_degrees(candidate_rotation)
     candidate = {
         "tx": float(candidate_translation[0]),
@@ -1458,6 +1446,7 @@ def api_comparison_icp():
         try:
             moving_source, _ = _comparison_source_arrays(moving_info["source"])
             reference_source, _ = _comparison_source_arrays(reference_info["source"])
+            moving_points = _comparison_transformed_xyz({"xyz": moving_source}, moving_transform)
             reference_points = _comparison_transformed_xyz(
                 {"xyz": reference_source},
                 _clean_comparison_export_transform(transforms.get(reference_cloud)),
@@ -1465,7 +1454,7 @@ def api_comparison_icp():
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
     try:
-        result = _comparison_icp(moving_source, reference_points, moving_transform, **params)
+        result = _comparison_icp(moving_points, reference_points, moving_transform, **params)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"ok": True, "moving_cloud": moving_cloud, "reference_cloud": reference_cloud,
