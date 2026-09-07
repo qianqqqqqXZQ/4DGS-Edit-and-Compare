@@ -1,5 +1,12 @@
 # Part-Level 4DGS Animation Editor Plan
 
+## Current Request: Comparison point-count HUD (2026-09-07)
+
+- [ ] Add a Comparison-only upper-right HUD for Cloud A and Cloud B point counts.
+- [ ] Refresh counts from Comparison metadata across loading, mode/layout changes, and cleanup.
+- [ ] Keep the HUD readable on desktop/mobile and above the Dual view canvas.
+- [ ] Run frontend syntax, HTTP/browser smoke, diff, and focused code-review checks.
+
 ## Current Request: Comparison layout and multi-format export (2026-09-01)
 
 - [x] Create a recoverable Git checkpoint before implementation (`d1de3fe`).
