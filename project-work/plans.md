@@ -1,16 +1,5 @@
 # Part-Level 4DGS Animation Editor Plan
 
-## Current Request: Comparison role swap, ICP, and operation history (2026-09-03)
-
-- [ ] Create a recoverable Git checkpoint before implementation.
-- [ ] Add stable Comparison source identities and A/B source-order mapping to Evaluate and Export.
-- [ ] Add Point-to-Point ICP with translation-only, rotation-only, and rigid modes using SciPy KD-tree.
-- [ ] Add ICP candidate preview with Apply/Cancel and preserve current transform/scale semantics.
-- [ ] Add whole-session A/B role swap without changing world-space cloud positions.
-- [ ] Add Comparison transform/registration history with coalesced slider edits, Undo/Redo, and keyboard shortcuts.
-- [ ] Add focused backend/frontend tests and update README plus project notes.
-- [ ] Run compile, API, frontend syntax, browser, diff, and focused code-review checks.
-
 ## Current Request: Comparison layout and multi-format export (2026-09-01)
 
 - [x] Create a recoverable Git checkpoint before implementation (`d1de3fe`).
