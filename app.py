@@ -23,11 +23,6 @@ try:
 except Exception:
     PlyData = None
 
-try:
-    from scipy.spatial import cKDTree
-except Exception:
-    cKDTree = None
-
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 EXPORT_ROOT = os.path.join(BASE_DIR, "generated")
@@ -1029,7 +1024,6 @@ def api_comparison_upload():
             cloud_id: {
                 "filename": filename,
                 "source": source,
-                "source_id": cloud_id,
                 "n_vertices": int(source["n_vertices"]),
                 "has_colors": bool(source.get("has_colors", False)),
             }
@@ -1072,41 +1066,6 @@ def api_comparison_delete():
     with STATE_LOCK:
         COMPARISON_STATE["clouds"] = {"a": None, "b": None}
     return jsonify({"ok": True})
-
-
-def _clean_comparison_source_order(value: Any = None) -> Dict[str, str]:
-    """Validate the client-side slot-to-original-source mapping."""
-    if value is None:
-        return {"a": "a", "b": "b"}
-    if not isinstance(value, dict):
-        raise ValueError("source_order must be an object")
-    mapping = {}
-    for slot in ("a", "b"):
-        source_id = str(value.get(slot, slot)).strip().lower()
-        if source_id not in ("a", "b"):
-            raise ValueError("source_order values must be 'a' or 'b'")
-        mapping[slot] = source_id
-    if len(set(mapping.values())) != 2:
-        raise ValueError("source_order must map the two slots to different sources")
-    return mapping
-
-
-def _comparison_info_for_slot(slot: str, source_order: Dict[str, str]) -> Optional[Dict[str, Any]]:
-    """Resolve a current client slot to its stable uploaded source identity."""
-    source_id = source_order.get(slot, slot)
-    for fallback_id, info in COMPARISON_STATE["clouds"].items():
-        if info and str(info.get("source_id", fallback_id)).lower() == source_id:
-            return info
-    return None
-
-
-def _comparison_request_infos(source_order: Any = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    mapping = _clean_comparison_source_order(source_order)
-    cloud_a = _comparison_info_for_slot("a", mapping)
-    cloud_b = _comparison_info_for_slot("b", mapping)
-    if not cloud_a or not cloud_b:
-        raise ValueError("Load both comparison point clouds before continuing")
-    return cloud_a, cloud_b
 
 
 def _clean_comparison_export_transform(value: Any) -> Dict[str, float]:
@@ -1164,12 +1123,11 @@ def api_comparison_export():
         return jsonify({"error": "format must be 'ply', 'pt', or 'npy'"}), 400
     try:
         transform = _clean_comparison_export_transform(body.get("transform"))
-        source_order = _clean_comparison_source_order(body.get("source_order"))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
     with STATE_LOCK:
-        info = _comparison_info_for_slot(cloud_id, source_order)
+        info = COMPARISON_STATE["clouds"].get(cloud_id)
         if not info:
             return jsonify({"error": "No comparison session is loaded"}), 400
         source = info["source"]
@@ -1241,224 +1199,6 @@ def _comparison_transformed_xyz(source: Dict[str, Any], transform: Any) -> np.nd
     pivot = np.mean(xyz, axis=0)
     rotation = euler_to_rotation_matrix(rx, ry, rz)
     return ((xyz - pivot) * scale) @ rotation.T + pivot + np.asarray([tx, ty, tz], dtype=np.float64)
-
-
-def _comparison_sample_indices(count: int, limit: int) -> np.ndarray:
-    if count <= limit:
-        return np.arange(count, dtype=np.int64)
-    return np.linspace(0, count - 1, limit, dtype=np.int64)
-
-
-def _comparison_clean_icp_params(body: Dict[str, Any]) -> Dict[str, Any]:
-    mode = str(body.get("mode", "rigid")).strip().lower()
-    if mode not in ("translation", "rotation", "rigid"):
-        raise ValueError("mode must be 'translation', 'rotation', or 'rigid'")
-    try:
-        max_iterations = int(body.get("max_iterations", 30))
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("max_iterations must be an integer") from exc
-    if max_iterations < 1 or max_iterations > 200:
-        raise ValueError("max_iterations must be between 1 and 200")
-    try:
-        max_distance = float(body.get("max_correspondence_distance", 0))
-        sample_limit = int(body.get("sample_limit", 50000))
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("ICP numeric parameters are invalid") from exc
-    if not np.isfinite(max_distance) or max_distance < 0:
-        raise ValueError("max_correspondence_distance must be finite and >= 0")
-    if sample_limit < 3 or sample_limit > 500000:
-        raise ValueError("sample_limit must be between 3 and 500000")
-    return {
-        "mode": mode,
-        "max_iterations": max_iterations,
-        "max_correspondence_distance": max_distance,
-        "sample_limit": sample_limit,
-    }
-
-
-def _comparison_kabsch(source: np.ndarray, target: np.ndarray) -> np.ndarray:
-    """Return row-vector rotation R where source @ R.T best matches target."""
-    source_center = np.mean(source, axis=0)
-    target_center = np.mean(target, axis=0)
-    covariance = (source - source_center).T @ (target - target_center)
-    u, _, vt = np.linalg.svd(covariance)
-    rotation = vt.T @ u.T
-    if np.linalg.det(rotation) < 0:
-        vt[-1, :] *= -1
-        rotation = vt.T @ u.T
-    if not np.isfinite(rotation).all() or abs(np.linalg.det(rotation) - 1.0) > 1e-5:
-        raise ValueError("ICP rotation solve is degenerate")
-    singular = np.linalg.svd(covariance, compute_uv=False)
-    if len(singular) < 2 or singular[1] <= max(float(singular[0]), 1.0) * 1e-12:
-        raise ValueError("ICP rotation solve is degenerate")
-    return rotation
-
-
-def _comparison_icp(
-    moving: np.ndarray,
-    reference: np.ndarray,
-    initial_transform: Dict[str, float],
-    mode: str,
-    max_iterations: int,
-    max_correspondence_distance: float,
-    sample_limit: int,
-) -> Dict[str, Any]:
-    """Run deterministic point-to-point ICP on already transformed XYZ arrays."""
-    if cKDTree is None:
-        raise ValueError("SciPy is required for Comparison ICP")
-    moving = np.asarray(moving, dtype=np.float64).reshape((-1, 3))
-    reference = np.asarray(reference, dtype=np.float64).reshape((-1, 3))
-    if len(moving) < 1 or len(reference) < 1:
-        raise ValueError("Comparison point clouds must not be empty")
-    moving_indices = _comparison_sample_indices(len(moving), sample_limit)
-    reference_indices = _comparison_sample_indices(len(reference), sample_limit)
-    moving_sample = moving[moving_indices]
-    reference_sample = reference[reference_indices]
-    reference_tree = cKDTree(reference_sample)
-    current = np.array(moving_sample, dtype=np.float64, copy=True)
-    rotation_total = np.eye(3, dtype=np.float64)
-    translation_total = np.zeros(3, dtype=np.float64)
-    previous_rmse = np.inf
-    iterations = 0
-    inliers = 0
-    rmse = np.inf
-    current_center = np.mean(current, axis=0)
-
-    for iteration in range(max_iterations):
-        distances, indices = reference_tree.query(
-            current,
-            distance_upper_bound=max_correspondence_distance or np.inf,
-        )
-        valid = np.isfinite(distances) & (indices < len(reference_sample))
-        if int(np.count_nonzero(valid)) < (3 if mode != "translation" else 1):
-            raise ValueError("ICP found too few corresponding points")
-        source_matches = current[valid]
-        target_matches = reference_sample[indices[valid]]
-        if mode == "translation":
-            delta_rotation = np.eye(3, dtype=np.float64)
-            delta_translation = np.mean(target_matches - source_matches, axis=0)
-        else:
-            if mode == "rotation":
-                source_center = np.mean(source_matches, axis=0)
-                target_center = np.mean(target_matches, axis=0)
-                delta_rotation = _comparison_kabsch(
-                    source_matches - source_center,
-                    target_matches - target_center,
-                )
-                delta_translation = source_center - source_center @ delta_rotation.T
-            else:
-                delta_rotation = _comparison_kabsch(source_matches, target_matches)
-                delta_translation = np.mean(target_matches, axis=0) - np.mean(source_matches, axis=0) @ delta_rotation.T
-        current = current @ delta_rotation.T + delta_translation
-        rotation_total = delta_rotation @ rotation_total
-        translation_total = translation_total @ delta_rotation.T + delta_translation
-        distances_after, _ = reference_tree.query(
-            current,
-            distance_upper_bound=max_correspondence_distance or np.inf,
-        )
-        valid_after = np.isfinite(distances_after)
-        if not np.any(valid_after):
-            raise ValueError("ICP produced no valid corresponding points")
-        rmse = float(np.sqrt(np.mean(np.square(distances_after[valid_after]))))
-        inliers = int(np.count_nonzero(valid_after))
-        iterations = iteration + 1
-        if abs(previous_rmse - rmse) <= 1e-8:
-            break
-        previous_rmse = rmse
-
-    initial_rotation = euler_to_rotation_matrix(
-        initial_transform.get("rx", 0),
-        initial_transform.get("ry", 0),
-        initial_transform.get("rz", 0),
-    )
-    pivot = np.mean(moving, axis=0) - np.asarray([
-        initial_transform.get("tx", 0),
-        initial_transform.get("ty", 0),
-        initial_transform.get("tz", 0),
-    ], dtype=np.float64)
-    candidate_rotation = rotation_total @ initial_rotation
-    current_center = np.mean(moving, axis=0)
-    candidate_translation = current_center @ rotation_total.T + translation_total - pivot
-    candidate_angles = _rotation_matrix_to_euler_degrees(candidate_rotation)
-    candidate = {
-        "tx": float(candidate_translation[0]),
-        "ty": float(candidate_translation[1]),
-        "tz": float(candidate_translation[2]),
-        "rx": candidate_angles[0],
-        "ry": candidate_angles[1],
-        "rz": candidate_angles[2],
-        "scale": float(initial_transform.get("scale", 1.0)),
-    }
-    delta_angles = _rotation_matrix_to_euler_degrees(rotation_total)
-    return {
-        "candidate_transform": candidate,
-        "delta_transform": {
-            "tx": float(translation_total[0]),
-            "ty": float(translation_total[1]),
-            "tz": float(translation_total[2]),
-            "rx": delta_angles[0],
-            "ry": delta_angles[1],
-            "rz": delta_angles[2],
-        },
-        "iterations": iterations,
-        "inliers": inliers,
-        "rmse": rmse,
-        "converged": iterations < max_iterations or abs(previous_rmse - rmse) <= 1e-8,
-    }
-
-
-def _rotation_matrix_to_euler_degrees(rotation: np.ndarray) -> Tuple[float, float, float]:
-    """Extract ZYX Euler degrees matching euler_to_rotation_matrix."""
-    rotation = np.asarray(rotation, dtype=np.float64).reshape((3, 3))
-    sy = float(np.clip(-rotation[2, 0], -1.0, 1.0))
-    ry = math.asin(sy)
-    cy = math.cos(ry)
-    if abs(cy) > 1e-8:
-        rx = math.atan2(rotation[2, 1], rotation[2, 2])
-        rz = math.atan2(rotation[1, 0], rotation[0, 0])
-    else:
-        rx = 0.0
-        rz = math.atan2(-rotation[0, 1], rotation[1, 1])
-    return tuple(float(value) for value in np.rad2deg([rx, ry, rz]))
-
-
-@app.post("/api/comparison/icp")
-def api_comparison_icp():
-    body = request.get_json(silent=True)
-    if not isinstance(body, dict):
-        return jsonify({"error": "Request body must be a JSON object"}), 400
-    moving_cloud = str(body.get("moving_cloud", "a")).strip().lower()
-    reference_cloud = str(body.get("reference_cloud", "b" if moving_cloud == "a" else "a")).strip().lower()
-    if moving_cloud not in ("a", "b") or reference_cloud not in ("a", "b") or moving_cloud == reference_cloud:
-        return jsonify({"error": "moving_cloud and reference_cloud must be different values of 'a' or 'b'"}), 400
-    try:
-        params = _comparison_clean_icp_params(body)
-        source_order = _clean_comparison_source_order(body.get("source_order"))
-        transforms = body.get("transforms") if isinstance(body.get("transforms"), dict) else {}
-        moving_transform = _clean_comparison_export_transform(transforms.get(moving_cloud))
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    with STATE_LOCK:
-        moving_info = _comparison_info_for_slot(moving_cloud, source_order)
-        reference_info = _comparison_info_for_slot(reference_cloud, source_order)
-        if not moving_info or not reference_info:
-            return jsonify({"error": "Load both comparison point clouds before running ICP"}), 400
-        try:
-            moving_source, _ = _comparison_source_arrays(moving_info["source"])
-            reference_source, _ = _comparison_source_arrays(reference_info["source"])
-            moving_points = _comparison_transformed_xyz({"xyz": moving_source}, moving_transform)
-            reference_points = _comparison_transformed_xyz(
-                {"xyz": reference_source},
-                _clean_comparison_export_transform(transforms.get(reference_cloud)),
-            )
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
-    try:
-        result = _comparison_icp(moving_points, reference_points, moving_transform, **params)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    return jsonify({"ok": True, "moving_cloud": moving_cloud, "reference_cloud": reference_cloud,
-                    "mode": params["mode"], **result})
 
 
 def _comparison_nearest(source: np.ndarray, target: np.ndarray, *, return_indices: bool = False,
@@ -1632,13 +1372,9 @@ def api_comparison_evaluate():
     if tau > tau_max:
         return jsonify({"error": "tau must be <= tau_max"}), 400
     auc_samples = 100
-    try:
-        source_order = _clean_comparison_source_order(body.get("source_order"))
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
     with STATE_LOCK:
-        cloud_a = _comparison_info_for_slot("a", source_order)
-        cloud_b = _comparison_info_for_slot("b", source_order)
+        cloud_a = COMPARISON_STATE["clouds"].get("a")
+        cloud_b = COMPARISON_STATE["clouds"].get("b")
         if not cloud_a or not cloud_b:
             return jsonify({"error": "Load both comparison point clouds before evaluating"}), 400
         transforms = body.get("transforms") if isinstance(body.get("transforms"), dict) else {}
