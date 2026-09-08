@@ -287,3 +287,16 @@ static points from SH DC. Verify this work using Flask's test client and in-memo
   metadata and refreshes the HUD, while the `.comparison-active` CSS rule hides it outside Comparison.
 - The HUD uses `toLocaleString()`, `pointer-events: none`, and a viewport-relative `z-index` above
   the point/canvas layers. Narrow layouts reduce padding and font size while reserving horizontal space.
+
+## Comparison Evaluation Notes (2026-09-08)
+
+- POST /api/comparison/evaluate uses required scipy.spatial.cKDTree exact Euclidean queries. It evaluates
+  only the directional nearest-neighbour arrays needed by the selected metrics, preserving Cloud A as prediction
+  and Cloud B as ground truth.
+- Normal Consistency queries exact same-cloud neighbours (k=16) and computes batched PCA normals; insufficient
+  or degenerate local geometry remains N/A.
+- The response keeps existing fields and adds runtime_seconds plus query_engine. Generated reports are bilingual
+  Chinese/English Markdown with experiment overview, configuration, transforms, results, and method tables.
+  Dynamic table values escape pipes, backslashes, and line breaks.
+- Run the focused regression with py -3.13 -m unittest discover -s tests -p "test_*.py"; run
+  py -3.13 -m py_compile app.py, frontend syntax checks, and git diff --check before marking changes complete.

@@ -6,12 +6,14 @@ import shutil
 import struct
 import tempfile
 import threading
+import time
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from flask import Flask, Response, jsonify, request, send_file
+from scipy.spatial import cKDTree
 
 try:
     import torch
@@ -1178,6 +1180,15 @@ _COMPARISON_METRIC_NAMES = {
     "normal_consistency": "Normal Consistency (NC)",
 }
 
+_COMPARISON_METRIC_REPORT_DETAILS = {
+    "accuracy": ("\u51c6\u786e\u7387\u8ddd\u79bb / Accuracy", "Acc.", "scene coordinate unit / \u573a\u666f\u5750\u6807\u5355\u4f4d", "Lower is better / \u8d8a\u4f4e\u8d8a\u597d", "mean d(P, G) / \u9884\u6d4b\u5230\u771f\u503c\u7684\u5e73\u5747\u6700\u8fd1\u90bb\u8ddd\u79bb"),
+    "completeness": ("\u5b8c\u6574\u7387\u8ddd\u79bb / Completeness", "Comp.", "scene coordinate unit / \u573a\u666f\u5750\u6807\u5355\u4f4d", "Lower is better / \u8d8a\u4f4e\u8d8a\u597d", "mean d(G, P) / \u771f\u503c\u5230\u9884\u6d4b\u7684\u5e73\u5747\u6700\u8fd1\u90bb\u8ddd\u79bb"),
+    "chamfer": ("\u5012\u89d2\u8ddd\u79bb / Chamfer Distance", "CD-L1", "scene coordinate unit / \u573a\u666f\u5750\u6807\u5355\u4f4d", "Lower is better / \u8d8a\u4f4e\u8d8a\u597d", "Accuracy + Completeness / \u4e24\u4e2a\u65b9\u5411\u8ddd\u79bb\u4e4b\u548c"),
+    "fscore": ("\uff26 \u5206\u6570 / F-Score", "F1", "dimensionless / \u65e0\u91cf\u7eb2", "Higher is better / \u8d8a\u9ad8\u8d8a\u597d", "harmonic mean of Precision and Recall at tau / tau \u9608\u503c\u4e0b\u7684\u8c03\u548c\u5e73\u5747"),
+    "auc": ("\u66f2\u7ebf\u4e0b\u9762\u79ef / Area Under Curve", "AUC", "dimensionless / \u65e0\u91cf\u7eb2", "Higher is better / \u8d8a\u9ad8\u8d8a\u597d", "normalized F-Score-threshold integral / \u5f52\u4e00\u5316 F-Score \u9608\u503c\u79ef\u5206"),
+    "normal_consistency": ("\u6cd5\u7ebf\u4e00\u81f4\u6027 / Normal Consistency", "NC", "dimensionless / \u65e0\u91cf\u7eb2", "Higher is better / \u8d8a\u9ad8\u8d8a\u597d", "mean absolute dot product of matched normals / \u5339\u914d\u70b9\u6cd5\u7ebf\u7edd\u5bf9\u5185\u79ef\u5747\u503c"),
+}
+
 
 def _comparison_transformed_xyz(source: Dict[str, Any], transform: Any) -> np.ndarray:
     """Apply the frontend Comparison transform around the source centroid."""
@@ -1201,87 +1212,50 @@ def _comparison_transformed_xyz(source: Dict[str, Any], transform: Any) -> np.nd
     return ((xyz - pivot) * scale) @ rotation.T + pivot + np.asarray([tx, ty, tz], dtype=np.float64)
 
 
-def _comparison_nearest(source: np.ndarray, target: np.ndarray, *, return_indices: bool = False,
-                        source_block_size: int = 1024, target_block_size: int = 4096) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """Find exact Euclidean nearest-neighbour distances in bounded memory."""
+def _comparison_nearest(source: np.ndarray, target: np.ndarray, *, return_indices: bool = False) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Find exact Euclidean nearest neighbours with a SciPy KD-tree."""
     source = np.asarray(source, dtype=np.float64).reshape((-1, 3))
     target = np.asarray(target, dtype=np.float64).reshape((-1, 3))
     if len(source) == 0 or len(target) == 0:
         raise ValueError("Comparison point clouds must not be empty")
-    distances = np.empty(len(source), dtype=np.float64)
-    indices = np.empty(len(source), dtype=np.int64) if return_indices else None
-    for start in range(0, len(source), source_block_size):
-        stop = min(start + source_block_size, len(source))
-        block = source[start:stop]
-        nearest_squared = np.full(stop - start, np.inf, dtype=np.float64)
-        nearest = np.zeros(stop - start, dtype=np.int64)
-        block_sq = np.sum(block * block, axis=1)[:, None]
-        for target_start in range(0, len(target), target_block_size):
-            target_stop = min(target_start + target_block_size, len(target))
-            target_block = target[target_start:target_stop]
-            squared = block_sq + np.sum(target_block * target_block, axis=1)[None, :]
-            squared -= 2.0 * block @ target_block.T
-            squared = np.maximum(squared, 0.0)
-            local = np.argmin(squared, axis=1)
-            local_squared = squared[np.arange(stop - start), local]
-            improved = local_squared < nearest_squared
-            nearest_squared[improved] = local_squared[improved]
-            nearest[improved] = target_start + local[improved]
-        distances[start:stop] = np.sqrt(nearest_squared)
-        if indices is not None:
-            indices[start:stop] = nearest
-    return distances, indices
+    distances, indices = cKDTree(target).query(source, k=1, workers=-1)
+    distances = np.asarray(distances, dtype=np.float64)
+    if return_indices:
+        return distances, np.asarray(indices, dtype=np.int64)
+    return distances, None
 
 
-def _comparison_normals(points: np.ndarray, k: int = 16, source_block_size: int = 512,
-                        target_block_size: int = 4096) -> Optional[np.ndarray]:
-    """Estimate unoriented point normals with same-cloud k-neighbour PCA."""
+def _comparison_normals(points: np.ndarray, k: int = 16) -> Optional[np.ndarray]:
+    """Estimate unoriented point normals with exact same-cloud k-neighbour PCA."""
     points = np.asarray(points, dtype=np.float64).reshape((-1, 3))
     if len(points) < 3:
         return None
     neighbour_count = min(int(k), len(points) - 1)
     if neighbour_count < 2:
         return None
-    normals = np.zeros_like(points)
-    stable = True
-    for start in range(0, len(points), source_block_size):
-        stop = min(start + source_block_size, len(points))
-        block = points[start:stop]
-        block_sq = np.sum(block * block, axis=1)[:, None]
-        row_indices = np.arange(start, stop)
-        best_sq = np.full((stop - start, neighbour_count), np.inf, dtype=np.float64)
-        neighbours = np.zeros((stop - start, neighbour_count), dtype=np.int64)
-        for target_start in range(0, len(points), target_block_size):
-            target_stop = min(target_start + target_block_size, len(points))
-            target_block = points[target_start:target_stop]
-            squared = block_sq + np.sum(target_block * target_block, axis=1)[None, :]
-            squared -= 2.0 * block @ target_block.T
-            squared = np.maximum(squared, 0.0)
-            local_rows = row_indices - target_start
-            inside = (local_rows >= 0) & (local_rows < len(target_block))
-            squared[np.flatnonzero(inside), local_rows[inside]] = np.inf
-            take = min(neighbour_count, len(target_block))
-            local = np.argpartition(squared, take - 1, axis=1)[:, :take]
-            local_sq = np.take_along_axis(squared, local, axis=1)
-            combined_sq = np.concatenate((best_sq, local_sq), axis=1)
-            combined_ids = np.concatenate((neighbours, target_start + local), axis=1)
-            best = np.argpartition(combined_sq, neighbour_count - 1, axis=1)[:, :neighbour_count]
-            best_sq = np.take_along_axis(combined_sq, best, axis=1)
-            neighbours = np.take_along_axis(combined_ids, best, axis=1)
-        for row, point_index in enumerate(row_indices):
-            local = points[neighbours[row]] - points[point_index]
-            covariance = local.T @ local / max(1, len(local))
-            try:
-                eigenvalues, eigenvectors = np.linalg.eigh(covariance)
-                normal = eigenvectors[:, int(np.argmin(eigenvalues))]
-                stable = stable and eigenvalues[1] > max(float(eigenvalues[-1]), 1.0) * 1e-12
-            except np.linalg.LinAlgError:
-                normal = np.zeros(3, dtype=np.float64)
-            norm = float(np.linalg.norm(normal))
-            normals[point_index] = normal / norm if norm > 1e-12 else 0.0
-    if not stable or not np.isfinite(normals).all() or np.any(np.linalg.norm(normals, axis=1) < 1e-12):
+    _, candidates = cKDTree(points).query(points, k=neighbour_count + 1, workers=-1)
+    candidates = np.asarray(candidates, dtype=np.int64)
+    if candidates.ndim == 1:
+        candidates = candidates[:, None]
+    point_indices = np.arange(len(points))
+    neighbours = np.empty((len(points), neighbour_count), dtype=np.int64)
+    for row, candidate_indices in enumerate(candidates):
+        usable = candidate_indices[candidate_indices != point_indices[row]]
+        if len(usable) < neighbour_count:
+            return None
+        neighbours[row] = usable[:neighbour_count]
+    offsets = points[neighbours] - points[:, None, :]
+    covariance = np.einsum("nki,nkj->nij", offsets, offsets) / neighbour_count
+    try:
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    except np.linalg.LinAlgError:
         return None
-    return normals
+    normals = eigenvectors[:, :, 0]
+    norms = np.linalg.norm(normals, axis=1)
+    stable = np.all(eigenvalues[:, 1] > np.maximum(eigenvalues[:, -1], 1.0) * 1e-12)
+    if not stable or not np.isfinite(normals).all() or np.any(norms < 1e-12):
+        return None
+    return normals / norms[:, None]
 
 
 def _comparison_fscore(distances_p: np.ndarray, distances_g: np.ndarray, threshold: float) -> Tuple[float, float, float]:
@@ -1290,11 +1264,10 @@ def _comparison_fscore(distances_p: np.ndarray, distances_g: np.ndarray, thresho
     denominator = precision + recall
     score = 2.0 * precision * recall / denominator if denominator > 0 else 0.0
     return precision, recall, score
-
-
 def _comparison_markdown(filename_a: str, filename_b: str, points_a: np.ndarray, points_b: np.ndarray,
                          transforms: Dict[str, Any], tau: float, tau_max: float, auc_samples: int,
-                         selected: List[str], values: Dict[str, Any], normal_note: Optional[str]) -> str:
+                         selected: List[str], values: Dict[str, Any], normal_note: Optional[str],
+                         runtime_seconds: float, query_engine: str) -> str:
     def fmt(value: Any) -> str:
         if value is None:
             return "N/A"
@@ -1302,51 +1275,78 @@ def _comparison_markdown(filename_a: str, filename_b: str, points_a: np.ndarray,
             return f"{float(value):.8f}"
         return str(value)
 
+    def cell(value: Any) -> str:
+        return fmt(value).replace("\\", "\\\\").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+    definitions = {
+        "accuracy": ("\u8861\u91cf\u9884\u6d4b\u70b9\u5230\u771f\u503c\u7684\u5e73\u5747\u6700\u8fd1\u90bb\u8ddd\u79bb", r"Accuracy=mean d(P,G)"),
+        "completeness": ("\u8861\u91cf\u771f\u503c\u70b9\u5230\u9884\u6d4b\u7684\u5e73\u5747\u6700\u8fd1\u90bb\u8ddd\u79bb", r"Completeness=mean d(G,P)"),
+        "chamfer": ("\u53cc\u5411\u6700\u8fd1\u90bb\u8ddd\u79bb\u4e4b\u548c", r"CD-L1=Accuracy+Completeness"),
+        "fscore": ("\u9608\u503c tau \u4e0b Precision \u4e0e Recall \u7684\u8c03\u548c\u5e73\u5747", r"F1=2*Precision*Recall/(Precision+Recall)"),
+        "auc": ("\u5728 0 \u5230 tau_max \u4e0a\u5bf9 F-Score \u66f2\u7ebf\u505a\u5f52\u4e00\u5316\u68af\u5f62\u79ef\u5206", r"AUC=integral(F(tau),0,tau_max)/tau_max"),
+        "normal_consistency": ("\u5339\u914d\u70b9\u6cd5\u7ebf\u7edd\u5bf9\u5185\u79ef\u7684\u5e73\u5747\u503c", r"NC=mean abs(nP dot nG*)"),
+    }
     lines = [
-        "# Comparison Evaluation Report",
+        "# Point Cloud Evaluation Report / \u70b9\u4e91\u8bc4\u4f30\u5b9e\u9a8c\u62a5\u544a",
         "",
-        "## Dataset",
+        "## 1. Experiment Overview / \u5b9e\u9a8c\u6982\u89c8",
         "",
-        f"- **Prediction (Cloud A):** `{filename_a}` ({len(points_a)} points)",
-        f"- **Ground Truth (Cloud B):** `{filename_b}` ({len(points_b)} points)",
-        "- **Evaluation time:** " + __import__("datetime").datetime.now().astimezone().isoformat(timespec="seconds"),
+        "| Item / \u9879\u76ee | Value / \u5185\u5bb9 |",
+        "| --- | --- |",
+        f"| Prediction / \u9884\u6d4b\u70b9\u4e91 (Cloud A) | {cell(filename_a)} |",
+        f"| Ground Truth / \u771f\u503c\u70b9\u4e91 (Cloud B) | {cell(filename_b)} |",
+        f"| Prediction points / \u9884\u6d4b\u70b9\u6570 | {len(points_a)} |",
+        f"| Ground-truth points / \u771f\u503c\u70b9\u6570 | {len(points_b)} |",
+        "| Evaluation roles / \u8bc4\u4f30\u89d2\u8272 | Cloud A = Prediction / \u9884\u6d4b\uff1bCloud B = Ground Truth / \u771f\u503c |",
+        "| Generated at / \u751f\u6210\u65f6\u95f4 | " + cell(__import__("datetime").datetime.now().astimezone().isoformat(timespec="seconds")) + " |",
         "",
-        "## Parameters",
+        "## 2. Evaluation Configuration / \u8bc4\u4f30\u914d\u7f6e",
         "",
-        f"- `tau`: {fmt(tau)}",
-        f"- `tau_max`: {fmt(tau_max)}",
-        f"- AUC samples: `{auc_samples}` equally spaced thresholds",
-        "- Normal estimation: same-cloud k-nearest-neighbour PCA (`k=16`)",
+        "| Parameter / \u53c2\u6570 | Value / \u503c |",
+        "| --- | --- |",
+        f"| Nearest-neighbour engine / \u6700\u8fd1\u90bb\u5f15\u64ce | {cell(query_engine)} |",
+        "| Distance metric / \u8ddd\u79bb\u5ea6\u91cf | Exact Euclidean distance / \u7cbe\u786e\u6b27\u6c0f\u8ddd\u79bb |",
+        f"| tau / \u9608\u503c | {cell(tau)} |",
+        f"| tau_max / \u6700\u5927\u9608\u503c | {cell(tau_max)} |",
+        f"| AUC samples / AUC \u91c7\u6837\u6570 | {auc_samples} equally spaced thresholds / \u7b49\u95f4\u9694\u9608\u503c |",
+        "| Normal estimation / \u6cd5\u7ebf\u4f30\u8ba1 | Same-cloud exact k-nearest-neighbour PCA, k=16 / \u540c\u4e91\u7cbe\u786e K \u8fd1\u90bb PCA\uff0ck=16 |",
+        f"| Runtime / \u8fd0\u884c\u8017\u65f6 | {runtime_seconds:.3f} s |",
         "",
-        "### Applied transforms",
+        "## 3. Applied Transforms / \u5e94\u7528\u53d8\u6362",
         "",
-        "| Cloud | tx | ty | tz | rx (deg) | ry (deg) | rz (deg) | scale |",
+        "| Cloud / \u70b9\u4e91 | tx | ty | tz | rx (deg) | ry (deg) | rz (deg) | scale / \u7f29\u653e |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for cloud_id in ("a", "b"):
-        tf = transforms.get(cloud_id) if isinstance(transforms, dict) else {}
-        tf = tf if isinstance(tf, dict) else {}
-        lines.append("| Cloud {} | {} | {} | {} | {} | {} | {} | {} |".format(
-            cloud_id.upper(), *(fmt(tf.get(name, 0.0)) for name in ("tx", "ty", "tz", "rx", "ry", "rz")),
-            fmt(tf.get("scale", 1.0))))
-    lines.extend(["", "## Metrics", ""])
-    definitions = {
-        "accuracy": ("\u8861\u91cf\u9884\u6d4b\u51fa\u6765\u7684\u8868\u9762\u6709\u591a\u5c11\u662f\u771f\u7684\u9760\u8fd1\u771f\u503c\u8868\u9762\u3002", r"$$Accuracy=\frac{1}{|P|}\sum_{p \in P} d(p,G)$$"),
-        "completeness": ("\u8861\u91cf\u771f\u503c\u8868\u9762\u6709\u6ca1\u6709\u88ab\u9884\u6d4b\u7ed3\u679c\u8986\u76d6\u5230\u3002", r"$$Completeness=\frac{1}{|G|}\sum_{g \in G}d(g,P)$$"),
-        "chamfer": ("Chamfer Distance \u662f Accuracy \u548c Completeness \u7684\u7efc\u5408\u5f62\u5f0f\u3002", r"$$CD_{L1}=\frac{1}{|P|}\sum_{p \in P}d(p,G)+\frac{1}{|G|}\sum_{g \in G}d(g,P)$$"),
-        "fscore": ("F-score \u662f Precision \u548c Recall \u7684\u8c03\u548c\u5e73\u5747\u6570\u3002", r"$$F-score(\tau)=\frac{2\cdot Precision(\tau)\cdot Recall(\tau)}{Precision(\tau)+Recall(\tau)}$$"),
-        "auc": ("AUC \u8868\u793a F-Score-Threshold \u66f2\u7ebf\u5728\u4e0d\u540c\u5bb9\u5fcd\u8bef\u5dee\u4e0b\u7684\u6574\u4f53\u8868\u73b0\u3002", r"$$AUC=\frac{1}{\tau_{max}}\int_0^{\tau_{max}}F(\tau)d\tau$$"),
-        "normal_consistency": ("NC \u8bc4\u4ef7\u9884\u6d4b\u8868\u9762\u4e0e GT \u8868\u9762\u5728\u5c40\u90e8\u671d\u5411\u4e0a\u7684\u4e00\u81f4\u7a0b\u5ea6\u3002", r"$$NC=\frac{1}{|P|}\sum_{p \in P}|n_p\cdot n_{g^*}|$$"),
-    }
+        transform = transforms.get(cloud_id) if isinstance(transforms, dict) else {}
+        transform = transform if isinstance(transform, dict) else {}
+        values_for_transform = [cell(transform.get(name, 0.0)) for name in ("tx", "ty", "tz", "rx", "ry", "rz")]
+        values_for_transform.append(cell(transform.get("scale", 1.0)))
+        lines.append("| Cloud {} | {} | {} | {} | {} | {} | {} | {} |".format(cloud_id.upper(), *values_for_transform))
+    lines.extend([
+        "",
+        "## 4. Results Summary / \u7ed3\u679c\u6c47\u603b",
+        "",
+        "| Metric / \u6307\u6807 | Symbol / \u7b26\u53f7 | Value / \u6570\u503c | Unit / \u5355\u4f4d | Better / \u4f18\u5316\u65b9\u5411 | Notes / \u5907\u6ce8 |",
+        "| --- | --- | ---: | --- | --- | --- |",
+    ])
     for metric in selected:
-        name = _COMPARISON_METRIC_NAMES[metric]
-        lines.extend([f"### {name}", "", f"**Value:** `{fmt(values.get(metric))}`", "", definitions[metric][0], "", definitions[metric][1], ""])
+        name, symbol, unit, direction, note = _COMPARISON_METRIC_REPORT_DETAILS[metric]
         if metric == "fscore":
-            lines.extend([f"- Precision(`tau`): `{fmt(values.get('precision'))}`", f"- Recall(`tau`): `{fmt(values.get('recall'))}`", ""])
-        elif metric == "auc":
-            lines.extend(["Discrete implementation uses the trapezoidal rule over the 100 sampled thresholds, then normalizes by `tau_max`.", ""])
-        elif metric == "normal_consistency" and normal_note:
-            lines.extend([f"**Note:** {normal_note}", ""])
+            note += f"; Precision={fmt(values.get('precision'))}, Recall={fmt(values.get('recall'))}"
+        if metric == "normal_consistency" and normal_note:
+            note += f"; {normal_note}"
+        lines.append(f"| {cell(name)} | {symbol} | {cell(values.get(metric))} | {cell(unit)} | {cell(direction)} | {cell(note)} |")
+    lines.extend([
+        "",
+        "## 5. Method Notes / \u65b9\u6cd5\u8bf4\u660e",
+        "",
+        "| Metric / \u6307\u6807 | Definition and implementation / \u5b9a\u4e49\u4e0e\u5b9e\u73b0 |",
+        "| --- | --- |",
+    ])
+    for metric in selected:
+        description, formula = definitions[metric]
+        lines.append(f"| {cell(_COMPARISON_METRIC_REPORT_DETAILS[metric][0])} | {cell(description + '; ' + formula)} |")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -1384,20 +1384,33 @@ def api_comparison_evaluate():
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         filename_a, filename_b = cloud_a["filename"], cloud_b["filename"]
+    started = time.perf_counter()
+    query_engine = "SciPy cKDTree (exact Euclidean)"
+    needs_prediction_to_ground_truth = bool(set(selected) & {"accuracy", "chamfer", "fscore", "auc", "normal_consistency"})
+    needs_ground_truth_to_prediction = bool(set(selected) & {"completeness", "chamfer", "fscore", "auc"})
     try:
-        distances_p, nearest_gt = _comparison_nearest(points_a, points_b, return_indices=True)
-        distances_g, _ = _comparison_nearest(points_b, points_a)
         values: Dict[str, Any] = {}
-        accuracy = float(np.mean(distances_p))
-        completeness = float(np.mean(distances_g))
+        distances_p: Optional[np.ndarray] = None
+        distances_g: Optional[np.ndarray] = None
+        nearest_gt: Optional[np.ndarray] = None
+        if needs_prediction_to_ground_truth:
+            distances_p, nearest_gt = _comparison_nearest(
+                points_a, points_b, return_indices=("normal_consistency" in selected)
+            )
+        if needs_ground_truth_to_prediction:
+            distances_g, _ = _comparison_nearest(points_b, points_a)
+        if distances_p is not None:
+            accuracy = float(np.mean(distances_p))
+        if distances_g is not None:
+            completeness = float(np.mean(distances_g))
         if "accuracy" in selected:
             values["accuracy"] = accuracy
         if "completeness" in selected:
             values["completeness"] = completeness
         if "chamfer" in selected:
             values["chamfer"] = accuracy + completeness
-        precision, recall, fscore = _comparison_fscore(distances_p, distances_g, tau)
         if "fscore" in selected:
+            precision, recall, fscore = _comparison_fscore(distances_p, distances_g, tau)
             values.update({"precision": precision, "recall": recall, "fscore": fscore})
         if "auc" in selected:
             thresholds = np.linspace(0.0, tau_max, auc_samples)
@@ -1412,10 +1425,13 @@ def api_comparison_evaluate():
                 values["normal_consistency"] = None
                 normal_note = "NC requires non-degenerate local PCA neighbourhoods in both clouds."
             else:
+                if nearest_gt is None:
+                    raise ValueError("Normal consistency requires prediction-to-ground-truth nearest neighbours")
                 dots = np.abs(np.sum(normals_p * normals_g[nearest_gt], axis=1))
                 values["normal_consistency"] = float(np.mean(np.clip(dots, 0.0, 1.0)))
+        runtime_seconds = time.perf_counter() - started
         markdown = _comparison_markdown(filename_a, filename_b, points_a, points_b, transforms, tau, tau_max,
-                                        auc_samples, selected, values, normal_note)
+                                        auc_samples, selected, values, normal_note, runtime_seconds, query_engine)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -1424,7 +1440,8 @@ def api_comparison_evaluate():
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(markdown)
     return jsonify({"ok": True, "filename": filename, "download_url": f"/api/comparison/evaluations/{filename}",
-                    "selected_metrics": selected, "values": values, "markdown": markdown})
+                    "selected_metrics": selected, "values": values, "markdown": markdown,
+                    "runtime_seconds": runtime_seconds, "query_engine": query_engine})
 
 
 @app.get("/api/comparison/evaluations/<filename>")

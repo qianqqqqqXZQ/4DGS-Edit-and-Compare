@@ -10,7 +10,7 @@ The project was designed for reconstruction and LiDAR-alignment work, where a mo
 - **Keyframed 4D editing:** Animate Part transforms along a timeline with linear or Catmull-Rom interpolation, then preview the result in the browser.
 - **4DGS support:** Load `.ply` point clouds, `.npy` arrays, gsplat-style `.pt` checkpoints, raw PyTorch tensors, or a directory of `.pt`/`.npy` frames as a looping 4DGS Part.
 - **Cloud-to-cloud comparison:** Load Cloud A and Cloud B in an isolated comparison workspace, view them individually, overlaid, or in synchronized dual viewports.
-- **Alignment and evaluation:** Apply independent translation, ZYX rotation, and centroid-preserving scale to each comparison cloud. Generate Markdown reports with Accuracy, Completeness, Chamfer Distance, F-Score, AUC, and optional normal consistency.
+- **Alignment and evaluation:** Apply independent translation, ZYX rotation, and centroid-preserving scale to each comparison cloud. Compute exact KD-tree-based metrics and generate bilingual Markdown experiment reports with Accuracy, Completeness, Chamfer Distance, F-Score, AUC, and optional normal consistency.
 - **Export-ready output:** Export a transformed comparison cloud as binary `.ply`, a raw point-cloud `.pt`, or an `.npy` array, plus the current editor frame as a Gaussian `.pt` or every timeline frame as a batch export. New workspaces default to one frame.
 
 ## What You Can Do
@@ -43,7 +43,15 @@ Comparison mode treats **Cloud A as the prediction** and **Cloud B as the ground
 - Area under the F-Score curve (AUC)
 - PCA-estimated Normal Consistency, where the input neighborhoods are sufficient and non-degenerate
 
-Reports are saved as Markdown under `generated/evaluations/` and downloaded automatically by the interface.
+Reports are saved as Markdown under `generated/evaluations/` and downloaded automatically by the interface. Each
+report is a bilingual Chinese/English experiment record with Markdown tables for the input clouds, evaluation
+configuration, applied transforms, metric results, and method notes. Distance results use the source scene's
+coordinate unit; the application does not infer a physical unit such as metres or millimetres.
+
+Nearest-neighbour distances and normal-estimation neighbourhoods use `scipy.spatial.cKDTree` with exact
+Euclidean queries. This keeps all points and the established metric definitions while avoiding the former
+point-count-squared brute-force distance scan. The response and report include the exact-query engine and
+evaluation runtime.
 
 ## Comparison Export
 
@@ -65,7 +73,7 @@ quaternions, scales, opacity, or spherical-harmonic attributes.
 
 | Path | Responsibility |
 | --- | --- |
-| `app.py` | Flask application, PLY/PT parsers, editor and comparison state, transform math, REST endpoints, evaluation, and export logic. |
+| `app.py` | Flask application, PLY/PT parsers, editor and comparison state, transform math, REST endpoints, exact KD-tree evaluation, bilingual report generation, and export logic. |
 | `static/editor.html` | The active Three.js editor, viewport renderer, selection interactions, timeline, and comparison UI. |
 | `static/three.min.js` | Local Three.js runtime. |
 | `static/OrbitControls.js` | Local orbit-camera controls. |

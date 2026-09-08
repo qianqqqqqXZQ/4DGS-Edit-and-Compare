@@ -495,3 +495,27 @@ py -3.13 -m py_compile app.py
 - `git diff --check`
 - Focused review covered extension routing, pickle-disabled NumPy loading, optional RGB fallback behavior, legacy
   multipart 4DGS import, mixed `.pt`/`.npy` frame directories, and preservation of existing `.ply`/`.pt` paths.
+
+## Current Request: Fast exact comparison evaluation and bilingual reports (2026-09-08)
+
+- [x] Create a recoverable Git checkpoint before the evaluation implementation (ee92b23).
+- [x] Replace brute-force point-pair scans with exact SciPy cKDTree queries and batch normal PCA.
+- [x] Avoid reverse nearest-neighbour evaluation unless the selected metric requires it.
+- [x] Generate bilingual, table-based Markdown experiment reports with escaped dynamic table values.
+- [x] Add the SciPy runtime dependency, response runtime/query-engine metadata, frontend elapsed-time status,
+  README documentation, and focused regression coverage.
+- [x] Run compilation, backend regressions, frontend syntax, benchmark, diff validation, and focused review.
+
+2026-09-08 verification completed:
+
+- py -3.13 -m py_compile app.py
+- py -3.13 -m unittest discover -s tests -p "test_*.py" -v: six evaluation regressions passed.
+- Node parsed the active inline editor script with new Function.
+- A generated report was checked for Chinese/English text, standard table headings, and escaped pipe,
+  backslash, and line-break values.
+- Exact cKDTree nearest-neighbour timing for two independently generated 12,000-point clouds was
+  approximately 0.0165 seconds in this environment.
+- git diff --check
+- Focused review covered Cloud A/B directionality, conditional nearest-neighbour queries, self-neighbour
+  removal for normal PCA, degenerate normal behavior, transformed inputs, table escaping, API compatibility,
+  frontend runtime display, and SciPy dependency availability in local and Docker installation paths.
