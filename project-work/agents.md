@@ -9,7 +9,8 @@ the root route serves the static editor when it is present.
 
 ## Layout
 
-- `README.md`: Polished English-first GitHub overview covering Part editing, 4DGS workflows, Cloud A/B comparison, evaluation, setup, and exports.
+- `README.md`: Standard English-first/Chinese GitHub documentation covering the implemented Part editing,
+  4DGS, Cloud A/B comparison, evaluation, setup, API, and export workflows.
 - `app.py`: Flask application, `STATE`, PLY/PT readers, Part/keyframe/4DGS APIs, and fallback UI.
 - `static/`: local Three.js r128 and OrbitControls assets.
 - `static/editor.html`: active Three.js editor, binary point-cloud parser, immutable source-position preview, and responsive controls.

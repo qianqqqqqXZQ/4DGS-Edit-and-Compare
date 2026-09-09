@@ -1,5 +1,26 @@
 # Part-Level 4DGS Animation Editor Plan
 
+## Current Request: Standardize repository README (2026-09-09)
+
+- [x] Create a recoverable Git checkpoint before replacing repository documentation (`7fd7ca0`).
+- [x] Reconcile the README with the current Flask/Three.js implementation and supported workflows.
+- [x] Publish a standard English-first README with a Chinese translation, setup instructions, API summary,
+  export/evaluation notes, and verification commands.
+- [x] Run documentation, compile, regression, and diff checks, then complete a focused documentation review.
+
+2026-09-09 verification completed:
+
+- Replaced the historical README with a standard bilingual English-first guide covering the implemented
+  editor, 4DGS import, Part/keyframe workflow, isolated Comparison workspace, evaluation metrics, export
+  semantics, API families, project structure, local setup, Docker, and development checks.
+- Confirmed the documented API families against Flask's registered route map and checked the README for
+  UTF-8 integrity, balanced code fences, required sections, and a clean heading start.
+- `py -3.13 -m py_compile app.py` passed; `py -3.13 -m unittest discover -s tests -p "test_*.py"`
+  passed (10 tests); `git diff --check` passed.
+- Focused review confirmed the README matches current UI/API behavior, including Cloud A/B roles, exact
+  cKDTree evaluation, centroid transforms, browser-download routes, generic Comparison formats, and the
+  in-memory session limitation. Updated `project-work/agents.md` to describe the bilingual README.
+
 ## Current Request: Comparison point-depth visibility fix (2026-09-09)
 
 - [x] Create a recoverable Git checkpoint before changing point depth behavior (`4265b97`).
