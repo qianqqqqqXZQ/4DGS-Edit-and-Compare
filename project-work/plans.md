@@ -1,5 +1,26 @@
 # Part-Level 4DGS Animation Editor Plan
 
+## Current Request: Comparison point-depth visibility fix (2026-09-09)
+
+- [x] Create a recoverable Git checkpoint before changing point depth behavior (`4265b97`).
+- [x] Identify the transparent-through-points artifact as a shared point material with depth writes disabled.
+- [x] Change the shared rounded-sprite material to write depth while retaining its anti-aliased circular edge.
+- [x] Synchronize the legacy `app.py` fallback with the active `static/editor.html` page.
+- [x] Run frontend/backend syntax, regression, WebGL material, diff, and focused review checks.
+
+2026-09-09 verification completed:
+
+- Active `static/editor.html` and the legacy `app.py` `HTML_PAGE` inline scripts parsed successfully with
+  Node `new Function`; `py -3.13 -m py_compile app.py` passed.
+- `py -3.13 -m unittest discover -s tests -p "test_*.py"` passed (10 tests), and `git diff --check`
+  passed.
+- Browser smoke reloaded the updated page, loaded `generated/frame_0000.pt` and `generated/frame_0001.pt`,
+  reached Comparison `Ready`, switched to Dual view, and confirmed the 6/4 point HUD with no browser
+  warning or error entries. Both point-material factories use `transparent:true`, `depthTest:true`,
+  `depthWrite:true`, `alphaTest:.001`, and the shared depth-aware shader cache key.
+- Focused review confirmed the factory is used by the main editor, Comparison A/B, and Dual-view clones;
+  no geometry, transform, visibility, export, or cleanup paths were changed.
+
 ## Current Request: Transform numeric keyboard input fix (2026-09-09)
 
 - [x] Create a recoverable Git checkpoint before changing transform input behavior (`ab83dce`).

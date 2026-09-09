@@ -70,6 +70,15 @@ unavailable in the configured Python environment.
   remove the `onBeforeCompile` hook and `transparent` circular path and restore ordinary
   `PointsMaterial` square rendering as the safe fallback.
 
+## Point-depth Visibility Fix (2026-09-09)
+
+- Rounded point sprites keep alpha blending for their anti-aliased circular edge, but the shared
+  factory now explicitly sets `depthTest: true`, `depthWrite: true`, and `alphaTest: .001`. This
+  lets opaque point interiors write the depth buffer, preventing Cloud A/B (and points within one
+  cloud) from visually showing through nearer points in Comparison mode.
+- The active `static/editor.html` and legacy `app.py` `HTML_PAGE` keep the same material options and
+  shader cache key. This applies equally to the editor, Comparison overlay, and Dual-view materials.
+
 Documentation conventions:
 
 - Keep planning/reference notes in `project-work/`.
