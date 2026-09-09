@@ -300,3 +300,15 @@ static points from SH DC. Verify this work using Flask's test client and in-memo
   Dynamic table values escape pipes, backslashes, and line breaks.
 - Run the focused regression with py -3.13 -m unittest discover -s tests -p "test_*.py"; run
   py -3.13 -m py_compile app.py, frontend syntax checks, and git diff --check before marking changes complete.
+
+## Comparison Loading Feedback (2026-09-09)
+
+- `static/editor.html` keeps Comparison metadata separate from editor state. The load flow is
+  synchronous on the server, so the UI reports `Preparing Cloud A and Cloud B...` immediately,
+  then updates through upload, metadata, geometry download, parsing, and `Ready` states.
+- `comparisonUploadBtn` is disabled for the complete async operation and re-enabled in `finally`,
+  including malformed-file and HTTP-error paths. Error text is prefixed with `Comparison load failed:`.
+- A restarted Flask process is required after editing `static/editor.html`; the root route serves the
+  static page, while `app.py` remains the legacy embedded fallback.
+- Browser verification fixture: `generated/frame_0000.pt` (6 points) and `generated/frame_0001.pt`
+  (4 points). Invalid `README.md` confirms failure recovery.

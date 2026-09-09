@@ -1,5 +1,13 @@
 # Part-Level 4DGS Animation Editor Plan
 
+## Current Request: Browser downloads for editor and named Comparison exports (2026-09-09)
+
+- [x] Create a recoverable Git checkpoint before changing export behavior (`7152b6f`).
+- [ ] Replace editor export path inputs with browser downloads for the current frame and frame batch.
+- [ ] Add an optional custom filename to Comparison exports with safe extension handling.
+- [ ] Add regression coverage for direct editor downloads and named Comparison responses.
+- [ ] Run Python/frontend syntax, focused API/browser smoke, diff, and code-review checks.
+
 ## Current Request: Comparison point-count HUD (2026-09-07)
 
 - [x] Add a Comparison-only upper-right HUD for Cloud A and Cloud B point counts.
@@ -519,3 +527,25 @@ py -3.13 -m py_compile app.py
 - Focused review covered Cloud A/B directionality, conditional nearest-neighbour queries, self-neighbour
   removal for normal PCA, degenerate normal behavior, transformed inputs, table escaping, API compatibility,
   frontend runtime display, and SciPy dependency availability in local and Docker installation paths.
+
+## Comparison Loading Feedback Fix (2026-09-09)
+
+- [x] Confirm the apparent `Cloud A/B: not loaded` state was caused by the synchronous upload,
+  geometry download, and browser parsing pipeline not updating the UI until the final step.
+- [x] Show explicit upload, metadata, geometry-download, parsing, and ready states while loading;
+  disable the load button during the request and restore it after success or failure.
+- [x] Restart the Flask service and verify real `.pt` uploads in the browser, including point counts,
+  successful rendering state, failed-file recovery, and an empty browser warning/error log.
+- [x] Run Python compilation, focused Flask regressions, frontend syntax/HTTP smoke checks, and
+  `git diff --check`; complete a focused review of state cleanup and button recovery.
+
+2026-09-09 verification completed:
+
+- Browser Comparison smoke test loaded `generated/frame_0000.pt` and `generated/frame_0001.pt`,
+  reached `Ready`, displayed `6` and `4` points, and kept the load button enabled after completion.
+- Invalid `README.md` input produced `Comparison load failed: Unsupported file type: README.md`
+  and restored the load button with an empty progress indicator.
+- Browser console contained no warning or error entries.
+- `py -3.13 -m py_compile app.py`
+- `py -3.13 -m unittest discover -s tests -p "test_*.py"` (6 tests passed)
+- `git diff --check`

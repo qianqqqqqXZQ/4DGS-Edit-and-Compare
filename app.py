@@ -2,6 +2,7 @@ import io
 import json
 import math
 import os
+import re
 import shutil
 import struct
 import tempfile
@@ -631,6 +632,39 @@ def _resolve_user_path(value: str) -> str:
     return os.path.abspath(os.path.expanduser(os.path.expandvars(value.strip())))
 
 
+_DOWNLOAD_FILENAME_INVALID = re.compile(r'[\\/\x00-\x1f\x7f<>:"|?*]')
+
+
+def _clean_download_filename(value: Any, default_stem: str, extension: str) -> str:
+    """Return a safe browser download name with exactly one known extension.
+
+    Download names never become server paths, but rejecting separators and control
+    characters keeps the Content-Disposition header predictable and prevents a
+    user-entered path from being mistaken for a filename.  The extension is
+    selected by the export format, so an optional matching extension is replaced
+    rather than duplicated.
+    """
+    extension = "." + str(extension).lstrip(".").lower()
+    supplied = value is not None and str(value).strip() != ""
+    candidate = str(value).strip() if supplied else str(default_stem).strip()
+    if not candidate or candidate in (".", ".."):
+        raise ValueError("filename must not be empty")
+    if supplied and _DOWNLOAD_FILENAME_INVALID.search(candidate):
+        raise ValueError("filename must be a simple file name without path separators")
+    if not supplied:
+        candidate = _DOWNLOAD_FILENAME_INVALID.sub("_", candidate)
+    candidate = candidate.rstrip(" .")
+    if not candidate:
+        raise ValueError("filename must not be empty")
+    known_extensions = {".ply", ".pt", ".npy", ".zip"}
+    suffix = Path(candidate).suffix.lower()
+    if suffix in known_extensions:
+        candidate = candidate[: -len(suffix)].rstrip(" .")
+    if not candidate:
+        raise ValueError("filename must include a name")
+    return candidate + extension
+
+
 def _scale_xyz_about_centroid(xyz: np.ndarray, scale: float) -> np.ndarray:
     """Scale XYZ around its own centroid without mutating the input array."""
     points = np.asarray(xyz, dtype=np.float64).reshape((-1, 3))
@@ -661,6 +695,15 @@ def _key_for(pid: int, frame: int) -> Dict[str, float]:
 
 def _write_pt(path: str, frame: Dict[str, Any]) -> None:
     save_frame_as_pt(frame["xyz"], frame["quats"], frame["scales"], frame["opacities"], frame["sh0"], frame.get("sh_rest"), frame.get("sh_degree", 0), path, colors=frame.get("colors"))
+
+
+def _frame_pt_bytes(frame: Dict[str, Any]) -> io.BytesIO:
+    """Serialize a canonical frame to an in-memory PT payload for downloads."""
+    output = io.BytesIO()
+    save_frame_as_pt(frame["xyz"], frame["quats"], frame["scales"], frame["opacities"], frame["sh0"],
+                     frame.get("sh_rest"), frame.get("sh_degree", 0), output, colors=frame.get("colors"))
+    output.seek(0)
+    return output
 
 
 def compute_frame_data(frame: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -1166,8 +1209,11 @@ def api_comparison_export():
         except Exception as exc:
             return jsonify({"error": f"Unable to export .pt file: {exc}"}), 400
     output.seek(0)
-    stem = Path(os.path.basename(source_filename)).stem or f"cloud_{cloud_id}"
-    filename = f"{stem}.transformed.{export_format}"
+    default_stem = (Path(os.path.basename(source_filename)).stem or f"cloud_{cloud_id}") + ".transformed"
+    try:
+        filename = _clean_download_filename(body.get("filename"), default_stem, export_format)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     return send_file(output, as_attachment=True, download_name=filename, mimetype="application/octet-stream")
 
 
@@ -1778,6 +1824,60 @@ def api_export_current_v2():
         return jsonify({"ok": True, "output_path": output_path, "n_vertices": int(payload["n_vertices"]), "frame": frame, "color_mode": color_mode})
 
 
+@app.post("/api/export_current/download")
+def api_export_current_download():
+    """Download the transformed current frame without requiring a server path."""
+    body = request.get_json(silent=True) or {}
+    try:
+        frame = int(body.get("frame", 0))
+        scale = _clean_scale(body.get("scale", 1.0))
+        color_mode = _clean_color_mode(body.get("color_mode", "original"))
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    with STATE_LOCK:
+        if not STATE["loaded"] or not _workspace_has_data():
+            return jsonify({"error": "No point-cloud data is loaded"}), 400
+        frame = max(0, min(frame, max(0, STATE["num_frames"] - 1)))
+        source_name = str(STATE.get("filename") or "point_cloud")
+    try:
+        payload = _export_frame_payload(frame, scale=scale, color_mode=color_mode)
+        output = _frame_pt_bytes(payload)
+        default_stem = (Path(os.path.basename(source_name)).stem or "point_cloud") + f".frame_{frame:04d}"
+        filename = _clean_download_filename(body.get("filename"), default_stem, "pt")
+    except (MemoryError, RuntimeError, ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return send_file(output, as_attachment=True, download_name=filename, mimetype="application/octet-stream")
+
+
+@app.post("/api/export/download")
+def api_export_download():
+    """Download all transformed frames as a browser-friendly ZIP archive."""
+    body = request.get_json(silent=True) or {}
+    try:
+        scale = _clean_scale(body.get("scale", 1.0))
+        color_mode = _clean_color_mode(body.get("color_mode", "original"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    with STATE_LOCK:
+        if not STATE["loaded"] or not _workspace_has_data():
+            return jsonify({"error": "No point-cloud data is loaded"}), 400
+        frame_count = int(STATE["num_frames"])
+        source_name = str(STATE.get("filename") or "point_cloud")
+    try:
+        archive_buffer = io.BytesIO()
+        with zipfile.ZipFile(archive_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for index in range(frame_count):
+                payload = _export_frame_payload(index, scale=scale, color_mode=color_mode)
+                frame_buffer = _frame_pt_bytes(payload)
+                archive.writestr(f"frame_{index:04d}.pt", frame_buffer.getvalue())
+        archive_buffer.seek(0)
+        default_stem = (Path(os.path.basename(source_name)).stem or "point_cloud") + ".frames"
+        filename = _clean_download_filename(body.get("filename"), default_stem, "zip")
+    except (MemoryError, RuntimeError, ValueError, TypeError, OSError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return send_file(archive_buffer, as_attachment=True, download_name=filename, mimetype="application/zip")
+
+
 @app.post("/api/create-part")
 def api_create_part():
     body = request.get_json(force=True); indices = sorted(set(int(i) for i in body.get("indices", [])))
@@ -1910,13 +2010,14 @@ function selectPart(pid){selectedPid=pid;const p=state.parts.find(x=>x.id===pid)
 function renderKeyList(){const ks=state.tracks[String(selectedPid)]||[];$('keyList').innerHTML=ks.length?ks.map(k=>`帧 ${k.frame}: T(${k.tx.toFixed(2)}, ${k.ty.toFixed(2)}, ${k.tz.toFixed(2)}) R(${k.rx.toFixed(2)}, ${k.ry.toFixed(2)}, ${k.rz.toFixed(2)})`).join('<br>'):'暂无关键帧'}
 function renderTrack(){const t=$('track');t.querySelectorAll('.key').forEach(x=>x.remove());if(selectedPid===null)return;(state.tracks[String(selectedPid)]||[]).forEach(k=>{const e=document.createElement('div');e.className='key';e.style.left=(k.frame/Math.max(1,state.num_frames-1)*100)+'%';t.appendChild(e)})}
 function createInfiniteGrid(){const geometry=new THREE.PlaneBufferGeometry(10000,10000);const material=new THREE.ShaderMaterial({uniforms:{gridColor:{value:new THREE.Color(0x1b2940)}},vertexShader:'varying vec3 vWorldPosition;void main(){vec4 worldPosition=modelMatrix*vec4(position,1.0);vWorldPosition=worldPosition.xyz;gl_Position=projectionMatrix*viewMatrix*worldPosition;}',fragmentShader:'varying vec3 vWorldPosition;uniform vec3 gridColor;float gridLine(float coordinate,float spacing,float width){float scaled=coordinate/spacing;float distanceToLine=abs(fract(scaled-0.5)-0.5);float aa=fwidth(scaled);return 1.0-smoothstep(width+aa,width+aa*2.0,distanceToLine);}void main(){float intensity=max(gridLine(vWorldPosition.x,1.0,.018),gridLine(vWorldPosition.y,1.0,.018));if(intensity<.01)discard;gl_FragColor=vec4(gridColor,intensity*.78);}',extensions:{derivatives:true},side:THREE.DoubleSide,transparent:true,depthTest:true,depthWrite:false,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});const grid=new THREE.Mesh(geometry,material);grid.renderOrder=-10;grid.userData.infiniteGrid=true;return grid}
+function createPointMaterial(size){const material=new THREE.PointsMaterial({size:Number(size)||Number($('pointSize').value)||3,vertexColors:true,sizeAttenuation:false,transparent:true,depthWrite:false});material.extensions.derivatives=true;material.onBeforeCompile=shader=>{shader.fragmentShader=shader.fragmentShader.replace('#include <alphatest_fragment>','float pointDistance=length(gl_PointCoord-vec2(0.5));float pointAA=fwidth(pointDistance);float pointAlpha=1.0-smoothstep(0.5-pointAA,0.5+pointAA,pointDistance);diffuseColor.a*=pointAlpha;if(diffuseColor.a<=0.001)discard;\n#include <alphatest_fragment>')};material.customProgramCacheKey=()=> 'rounded-point-sprite-v1';return material}
 function syncInfiniteGrid(targetScene,target){const grid=targetScene&&targetScene.userData.infiniteGrid;if(!grid||!target)return;const snap=1000;grid.position.set(Math.round(target.x/snap)*snap,Math.round(target.y/snap)*snap,0)}
 function init3d(){scene=new THREE.Scene();scene.background=new THREE.Color(0x080d18);camera=new THREE.PerspectiveCamera(55,1,.01,10000);camera.up.set(0,0,1);camera.position.set(3,-4,2.5);renderer=new THREE.WebGLRenderer({antialias:true});renderer.setPixelRatio(devicePixelRatio);$('viewport').appendChild(renderer.domElement);controls=new THREE.OrbitControls(camera,renderer.domElement);controls.target.set(0,0,0);const grid=createInfiniteGrid();scene.add(grid);scene.userData.infiniteGrid=grid;window.addEventListener('resize',resize);resize();renderer.setAnimationLoop(()=>{syncInfiniteGrid(scene,controls.target);renderer.render(scene,camera)});renderer.domElement.addEventListener('pointerdown',startDrag);renderer.domElement.addEventListener('pointermove',moveDrag);renderer.domElement.addEventListener('pointerup',endDrag)}
 function resize(){const r=$('viewport').getBoundingClientRect();camera.aspect=r.width/r.height;camera.updateProjectionMatrix();renderer.setSize(r.width,r.height)}
 function startDrag(e){if(e.button!==0)return;drag={x:e.offsetX,y:e.offsetY};$('selection').style.display='block';$('selection').style.left=e.offsetX+'px';$('selection').style.top=e.offsetY+'px';$('selection').style.width='0';$('selection').style.height='0'}
 function moveDrag(e){if(!drag)return;const x=Math.min(drag.x,e.offsetX),y=Math.min(drag.y,e.offsetY),w=Math.abs(e.offsetX-drag.x),h=Math.abs(e.offsetY-drag.y);Object.assign($('selection').style,{left:x+'px',top:y+'px',width:w+'px',height:h+'px'})}
 function endDrag(e){if(!drag)return;const box=$('selection').getBoundingClientRect(), rect=renderer.domElement.getBoundingClientRect();selectedIndices=[];if(points){const pos=points.geometry.attributes.position;for(let i=0;i<pos.count;i++){const v=new THREE.Vector3().fromBufferAttribute(pos,i).project(camera);const sx=rect.left+(v.x+1)*rect.width/2,sy=rect.top+(-v.y+1)*rect.height/2;if(sx>=box.left&&sx<=box.right&&sy>=box.top&&sy<=box.bottom&&visibleSourceIndices[i]>=0)selectedIndices.push(visibleSourceIndices[i])}}selectedIndices=[...new Set(selectedIndices)];log(`选中 ${selectedIndices.length} 个静态点`);drag=null}
-async function loadFrame(f){if(!state.loaded&&!state.parts.length)return;try{const d=await api('/api/frame/'+f);visibleSourceIndices=d.source_indices||[];if(points)scene.remove(points);const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(d.xyz.flat(),3));geo.setAttribute('color',new THREE.Float32BufferAttribute(d.colors.flat(),3));const mat=new THREE.PointsMaterial({size:+$('pointSize').value,vertexColors:true,sizeAttenuation:true});points=new THREE.Points(geo,mat);scene.add(points);if(d.xyz.length&&!camera.userData.fitted){const b=new THREE.Box3().setFromObject(points),c=b.getCenter(new THREE.Vector3()),s=b.getSize(new THREE.Vector3()).length();controls.target.copy(c);camera.position.copy(c).add(new THREE.Vector3(s,-s,s*.7));camera.userData.fitted=true}}catch(e){log(e.message)}}
+async function loadFrame(f){if(!state.loaded&&!state.parts.length)return;try{const d=await api('/api/frame/'+f);visibleSourceIndices=d.source_indices||[];if(points)scene.remove(points);const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(d.xyz.flat(),3));geo.setAttribute('color',new THREE.Float32BufferAttribute(d.colors.flat(),3));const mat=createPointMaterial(+$('pointSize').value);points=new THREE.Points(geo,mat);scene.add(points);if(d.xyz.length&&!camera.userData.fitted){const b=new THREE.Box3().setFromObject(points),c=b.getCenter(new THREE.Vector3()),s=b.getSize(new THREE.Vector3()).length();controls.target.copy(c);camera.position.copy(c).add(new THREE.Vector3(s,-s,s*.7));camera.userData.fitted=true}}catch(e){log(e.message)}}
 async function upload(){const fs=$('fileInput').files;if(!fs.length)return;const fd=new FormData();[...fs].forEach(f=>fd.append('files',f));$('progress').textContent='上传中…';try{await api('/api/upload',{method:'POST',body:fd});log('点云加载完成');await refresh()}catch(e){log(e.message)}$('progress').textContent=''}
 async function import4d(){const fs=$('frameInput').files;if(!fs.length)return;const fd=new FormData();[...fs].sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true})).forEach(f=>{fd.append('files',f);fd.append('filenames',f.name)});try{await api('/api/import-4dgs',{method:'POST',body:fd});log('4DGS 帧序列导入完成');await refresh()}catch(e){log(e.message)}}
 $('uploadBtn').onclick=()=>$('fileInput').click();$('fileInput').onchange=upload;$('importBtn').onclick=()=>$('frameInput').click();$('frameInput').onchange=import4d;$('pointSize').oninput=()=>{if(points)points.material.size=+$('pointSize').value};$('resetView').onclick=()=>{camera.userData.fitted=false;camera.position.set(3,-4,2.5);controls.target.set(0,0,0)};$('clearSelection').onclick=()=>{selectedIndices=[];$('selection').style.display='none'};
