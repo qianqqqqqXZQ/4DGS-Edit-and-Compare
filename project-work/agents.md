@@ -17,6 +17,39 @@ the root route serves the static editor when it is present.
 - `project-work/`: maintained planning and project-reference documents.
 - `requirements.txt`: Flask, NumPy, plyfile, and PyTorch dependencies.
 
+## Transform Numeric Input Contract (2026-09-09)
+
+- The active UI in `static/editor.html` uses text inputs for Part TX/TY/TZ/RX/RY/RZ, Comparison A/B
+  TX/TY/TZ/RX/RY/RZ/Scale, and editor global Scale. `parseNumericText()` accepts finite complete values,
+  while incomplete drafts such as `-`, `-.`, `.`, `1.`, `1e`, and `1e-` remain in the DOM without changing
+  the last valid transform.
+- Canonical state is intentionally separate from DOM drafts: `partTransformUiValues` feeds `uiTransform()`,
+  `comparisonTransformUiValues.a/b` feeds the Comparison UI, and `comparisonTransforms.a/b` feeds geometry,
+  export, and evaluation. `editorScale` feeds editor preview and export. Programmatic setters and reset/frame/
+  cloud switches update the canonical value, text draft, slider, and label through the same setters.
+- Finite numeric drafts preview immediately. Blur or Enter commits: invalid/empty text restores the last valid
+  value; rotations clamp to `-180..180` degrees; Scale clamps to `.1..20`; TX/TY/TZ remain any finite value.
+  Translation range min/max values expand when needed and are retained for the lifetime of the control. Slider
+  input is always a complete commit and remains bidirectionally synchronized.
+- UI rotations are degrees, while Part/Comparison transform objects and backend APIs continue to use radians;
+  Comparison evaluation serializes degrees as before. Numeric formatting removes only unnecessary trailing zeros
+  and never truncates valid precision such as `2.375`.
+- Each transform control has one input handler path. `wireComparisonEvents()` owns Comparison transform fields,
+  `wireScaleEvents()` owns only editor Scale, and `applyComparisonTransform()` stores canonical Comparison state
+  before checking whether geometry is currently loaded. This prevents pre-load edits from being discarded.
+
+Validation for this contract:
+
+```powershell
+node --check <temporary inline editor script>
+py -3.13 -m py_compile app.py
+py -3.13 -m unittest discover -s tests -p "test_*.py"
+git diff --check
+```
+
+The browser smoke uses `generated/frame_0000.pt` and `generated/frame_0001.pt`; pytest is optional and may be
+unavailable in the configured Python environment.
+
 ## Circular Point Sprite Rendering (2026-09-09)
 
 - Point clouds still use `THREE.PointsMaterial` with vertex colors, pixel-sized points,

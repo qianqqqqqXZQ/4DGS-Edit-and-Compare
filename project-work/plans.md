@@ -1,5 +1,39 @@
 # Part-Level 4DGS Animation Editor Plan
 
+## Current Request: Transform numeric keyboard input fix (2026-09-09)
+
+- [x] Create a recoverable Git checkpoint before changing transform input behavior (`ab83dce`).
+- [x] Add one shared numeric-input path for Part transforms, Comparison A/B transforms, Comparison scale,
+  and editor global scale; keep drafts separate from canonical preview/export state.
+- [x] Preserve intermediate drafts (`1.`, `.5`, `-`, `-.`, `1e`, `1e-`) without writing them back or
+  resetting the active preview; preview finite values immediately.
+- [x] Commit on blur/Enter with finite-value normalization, rotation clamping to `-180..180`, scale
+  clamping to `.1..20`, invalid-value recovery, and dynamic translation slider bounds.
+- [x] Keep Part and Comparison A/B transform state independent, including scale and programmatic setters;
+  save Comparison canonical values even when geometry is not loaded yet.
+- [x] Remove duplicate Comparison transform/scale event paths while preserving slider behavior, degree/radian
+  conversion, export payloads, evaluation payloads, and Dual view synchronization.
+- [x] Run frontend/backend syntax checks, API regression tests, browser input checks, console checks, diff
+  validation, and focused code review.
+
+2026-09-09 verification completed:
+
+- Node `new Function`/`node --check` parsed the active `static/editor.html` inline script (64,141 chars) after
+  removing the duplicate `loadFrameTransforms()` and `playAnimation()` definitions.
+- `py -3.13 -m py_compile app.py` passed; `py -3.13 -m unittest discover -s tests -p "test_*.py"`
+  passed (10 tests). `py -3.13 -m pytest -q` could not run because pytest is not installed in this Python
+  environment. `git diff --check` passed.
+- Browser checks on `http://127.0.0.1:5011/` used the generated 6-point and 4-point fixtures. Part input
+  preserved intermediate drafts, previewed finite values, expanded TX bounds to include `12.5`, and clamped
+  RX `190` to `180` on commit. Comparison loaded both clouds, kept A/B values independent, preserved Scale
+  precision (`2.375`), clamped invalid/zero Scale to `.1`, and editor global Scale clamped `25` to `20`.
+- Browser console returned no warning or error entries during the interaction checks. The active page still
+  reported the existing point counts and Comparison HUD correctly; no backend API route or payload shape changed.
+- Focused review confirmed transform numeric inputs are text controls with one input path each, no transform
+  draft is parsed with `Number(input.value) || 0`, canonical Part/Comparison/editor-scale state drives preview,
+  and all angle/API conversion remains degrees in the UI and radians internally (Comparison evaluation converts
+  back to degrees).
+
 ## Current Request: Circular point sprites (2026-09-09)
 
 - [x] Create a shared rounded point-sprite material factory in the active editor.
