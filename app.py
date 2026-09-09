@@ -1828,6 +1828,8 @@ def api_export_current_v2():
 def api_export_current_download():
     """Download the transformed current frame without requiring a server path."""
     body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     try:
         frame = int(body.get("frame", 0))
         scale = _clean_scale(body.get("scale", 1.0))
@@ -1842,7 +1844,9 @@ def api_export_current_download():
     try:
         payload = _export_frame_payload(frame, scale=scale, color_mode=color_mode)
         output = _frame_pt_bytes(payload)
-        default_stem = (Path(os.path.basename(source_name)).stem or "point_cloud") + f".frame_{frame:04d}"
+        source_stem = Path(os.path.basename(source_name)).stem or "point_cloud"
+        frame_suffix = re.fullmatch(r"frame_\d{4}", source_stem, re.IGNORECASE)
+        default_stem = source_stem if frame_suffix else source_stem + f".frame_{frame:04d}"
         filename = _clean_download_filename(body.get("filename"), default_stem, "pt")
     except (MemoryError, RuntimeError, ValueError, TypeError) as exc:
         return jsonify({"error": str(exc)}), 400
@@ -1853,6 +1857,8 @@ def api_export_current_download():
 def api_export_download():
     """Download all transformed frames as a browser-friendly ZIP archive."""
     body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     try:
         scale = _clean_scale(body.get("scale", 1.0))
         color_mode = _clean_color_mode(body.get("color_mode", "original"))
@@ -2010,7 +2016,7 @@ function selectPart(pid){selectedPid=pid;const p=state.parts.find(x=>x.id===pid)
 function renderKeyList(){const ks=state.tracks[String(selectedPid)]||[];$('keyList').innerHTML=ks.length?ks.map(k=>`帧 ${k.frame}: T(${k.tx.toFixed(2)}, ${k.ty.toFixed(2)}, ${k.tz.toFixed(2)}) R(${k.rx.toFixed(2)}, ${k.ry.toFixed(2)}, ${k.rz.toFixed(2)})`).join('<br>'):'暂无关键帧'}
 function renderTrack(){const t=$('track');t.querySelectorAll('.key').forEach(x=>x.remove());if(selectedPid===null)return;(state.tracks[String(selectedPid)]||[]).forEach(k=>{const e=document.createElement('div');e.className='key';e.style.left=(k.frame/Math.max(1,state.num_frames-1)*100)+'%';t.appendChild(e)})}
 function createInfiniteGrid(){const geometry=new THREE.PlaneBufferGeometry(10000,10000);const material=new THREE.ShaderMaterial({uniforms:{gridColor:{value:new THREE.Color(0x1b2940)}},vertexShader:'varying vec3 vWorldPosition;void main(){vec4 worldPosition=modelMatrix*vec4(position,1.0);vWorldPosition=worldPosition.xyz;gl_Position=projectionMatrix*viewMatrix*worldPosition;}',fragmentShader:'varying vec3 vWorldPosition;uniform vec3 gridColor;float gridLine(float coordinate,float spacing,float width){float scaled=coordinate/spacing;float distanceToLine=abs(fract(scaled-0.5)-0.5);float aa=fwidth(scaled);return 1.0-smoothstep(width+aa,width+aa*2.0,distanceToLine);}void main(){float intensity=max(gridLine(vWorldPosition.x,1.0,.018),gridLine(vWorldPosition.y,1.0,.018));if(intensity<.01)discard;gl_FragColor=vec4(gridColor,intensity*.78);}',extensions:{derivatives:true},side:THREE.DoubleSide,transparent:true,depthTest:true,depthWrite:false,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1});const grid=new THREE.Mesh(geometry,material);grid.renderOrder=-10;grid.userData.infiniteGrid=true;return grid}
-function createPointMaterial(size){const material=new THREE.PointsMaterial({size:Number(size)||Number($('pointSize').value)||3,vertexColors:true,sizeAttenuation:false,transparent:true,depthWrite:false});material.extensions.derivatives=true;material.onBeforeCompile=shader=>{shader.fragmentShader=shader.fragmentShader.replace('#include <alphatest_fragment>','float pointDistance=length(gl_PointCoord-vec2(0.5));float pointAA=fwidth(pointDistance);float pointAlpha=1.0-smoothstep(0.5-pointAA,0.5+pointAA,pointDistance);diffuseColor.a*=pointAlpha;if(diffuseColor.a<=0.001)discard;\n#include <alphatest_fragment>')};material.customProgramCacheKey=()=> 'rounded-point-sprite-v1';return material}
+function createPointMaterial(size){const material=new THREE.PointsMaterial({size:Number(size)||Number($('pointSize').value)||3,vertexColors:true,sizeAttenuation:false,transparent:true,depthWrite:false});material.extensions=material.extensions||{};material.extensions.derivatives=true;material.onBeforeCompile=shader=>{shader.fragmentShader=shader.fragmentShader.replace('#include <alphatest_fragment>','float pointDistance=length(gl_PointCoord-vec2(0.5));float pointAA=fwidth(pointDistance);float pointAlpha=1.0-smoothstep(0.5-pointAA,0.5+pointAA,pointDistance);diffuseColor.a*=pointAlpha;if(diffuseColor.a<=0.001)discard;\n#include <alphatest_fragment>')};material.customProgramCacheKey=()=> 'rounded-point-sprite-v1';return material}
 function syncInfiniteGrid(targetScene,target){const grid=targetScene&&targetScene.userData.infiniteGrid;if(!grid||!target)return;const snap=1000;grid.position.set(Math.round(target.x/snap)*snap,Math.round(target.y/snap)*snap,0)}
 function init3d(){scene=new THREE.Scene();scene.background=new THREE.Color(0x080d18);camera=new THREE.PerspectiveCamera(55,1,.01,10000);camera.up.set(0,0,1);camera.position.set(3,-4,2.5);renderer=new THREE.WebGLRenderer({antialias:true});renderer.setPixelRatio(devicePixelRatio);$('viewport').appendChild(renderer.domElement);controls=new THREE.OrbitControls(camera,renderer.domElement);controls.target.set(0,0,0);const grid=createInfiniteGrid();scene.add(grid);scene.userData.infiniteGrid=grid;window.addEventListener('resize',resize);resize();renderer.setAnimationLoop(()=>{syncInfiniteGrid(scene,controls.target);renderer.render(scene,camera)});renderer.domElement.addEventListener('pointerdown',startDrag);renderer.domElement.addEventListener('pointermove',moveDrag);renderer.domElement.addEventListener('pointerup',endDrag)}
 function resize(){const r=$('viewport').getBoundingClientRect();camera.aspect=r.width/r.height;camera.updateProjectionMatrix();renderer.setSize(r.width,r.height)}

@@ -1,12 +1,58 @@
 # Part-Level 4DGS Animation Editor Plan
 
+## Current Request: Circular point sprites (2026-09-09)
+
+- [x] Create a shared rounded point-sprite material factory in the active editor.
+- [x] Apply the same material behavior to the main editor, Comparison A/B, Dual view clones, and point-size updates.
+- [x] Keep the legacy `app.py` embedded page synchronized with the active page.
+- [x] Preserve pixel-sized points (`sizeAttenuation: false`), vertex colors, point geometry, transforms, selection, and export behavior.
+- [x] Add a Three.js r128-compatible derivatives extension initialization for the `fwidth` anti-aliasing path.
+- [x] Run frontend/backend syntax checks and `git diff --check`.
+- [x] Run browser shader, visual, responsive-layout, material-reuse, and cleanup smoke checks.
+- [x] Complete a focused review of shader injection, point-size synchronization, multi-view reuse, and GPU resource disposal.
+
+2026-09-09 verification completed:
+
+- Active `static/editor.html` inline JavaScript parsed successfully with Node `new Function`; the legacy
+  `app.py` `HTML_PAGE` inline script parsed successfully as well.
+- `py -3.13 -m py_compile app.py` and `git diff --check` passed.
+- Flask/browser smoke loaded `generated/frame_0000.pt` in the main editor and loaded
+  `generated/frame_0000.pt` plus `generated/frame_0001.pt` in Comparison. The rounded material
+  compiled in the main view, Comparison single view, and both Dual view panes with no browser
+  warnings or errors. The point-size control reached its minimum/default/maximum range and updated
+  the active and cloned materials without recreating geometry.
+- Desktop and 390x844 checks showed no new horizontal overflow; Dual view stacked correctly on the
+  narrow layout. The available fixture was small, but interaction remained responsive and the change
+  adds only fragment distance/`fwidth`/`smoothstep` work; no CPU point duplication or per-frame JS
+  calculations were introduced. No performance-triggered fallback to square sprites was necessary.
+- Focused review confirmed `createPointMaterial()` is used by all active point objects, Dual view
+  clones receive independent disposable materials while sharing geometry safely, and cleanup still
+  disposes renderers, materials, and owned geometry without leaks.
+
 ## Current Request: Browser downloads for editor and named Comparison exports (2026-09-09)
 
 - [x] Create a recoverable Git checkpoint before changing export behavior (`7152b6f`).
-- [ ] Replace editor export path inputs with browser downloads for the current frame and frame batch.
-- [ ] Add an optional custom filename to Comparison exports with safe extension handling.
-- [ ] Add regression coverage for direct editor downloads and named Comparison responses.
-- [ ] Run Python/frontend syntax, focused API/browser smoke, diff, and code-review checks.
+- [x] Replace editor export path inputs with browser downloads for the current frame and frame batch.
+- [x] Add an optional custom filename to Comparison exports with safe extension handling.
+- [x] Add regression coverage for direct editor downloads and named Comparison responses.
+- [x] Run Python/frontend syntax, focused API/browser smoke, diff, and code-review checks.
+
+2026-09-09 verification completed:
+
+- `py -3.13 -m py_compile app.py tests/test_export_downloads.py`
+- `py -3.13 -m unittest discover -s tests -p "test_*.py"` (10 tests passed)
+- Active `static/editor.html` inline JavaScript parsed successfully with Node `--check`.
+- Flask test-client checks confirmed current-frame `.pt` and all-frame `.zip` responses are
+  browser downloads without a server output path, and Comparison accepts `aligned_result.ply`
+  while rejecting `../escape.ply`.
+- Browser smoke after a clean Flask restart confirmed the editor modal says the file downloads
+  through the browser, the frame and ZIP actions complete, Comparison reaches `Ready` for the
+  two fixtures, and a custom `aligned_result` name downloads as `aligned_result.ply` with no
+  console warnings/errors.
+- `git diff --check`
+- Focused review confirmed legacy server-path APIs remain backward compatible, browser download
+  handlers are installed after the legacy bindings, and user-provided names cannot inject path
+  separators or control characters into `Content-Disposition`.
 
 ## Current Request: Comparison point-count HUD (2026-09-07)
 

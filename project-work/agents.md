@@ -17,6 +17,26 @@ the root route serves the static editor when it is present.
 - `project-work/`: maintained planning and project-reference documents.
 - `requirements.txt`: Flask, NumPy, plyfile, and PyTorch dependencies.
 
+## Circular Point Sprite Rendering (2026-09-09)
+
+- Point clouds still use `THREE.PointsMaterial` with vertex colors, pixel-sized points,
+  and `sizeAttenuation: false`. `createPointMaterial(size)` is the single factory used by
+  the main editor, Comparison A/B objects, and Dual view clones in `static/editor.html`.
+- The factory initializes `material.extensions` for Three.js r128, enables derivatives, and
+  injects a small `gl_PointCoord` distance test into the fragment shader. `fwidth` plus
+  `smoothstep` provides a lightly anti-aliased circular edge; fragments outside the radius
+  are discarded. The same factory and shader hook are mirrored in the legacy `HTML_PAGE`
+  inside `app.py`.
+- The point-size slider changes `.size` on the main, Comparison, and Dual view materials;
+  it does not rebuild buffers or perform per-frame JavaScript work. Dual view clones use a
+  fresh material but share source geometry, and the existing disposal path releases each
+  renderer/material while leaving shared geometry ownership with the source object.
+- Browser smoke checks on the available point-cloud fixtures compiled all views without
+  WebGL warnings and showed no responsive-layout overflow or perceptible interaction delay.
+  If a target browser/GPU reports shader compilation failures or clearly visible frame drops,
+  remove the `onBeforeCompile` hook and `transparent` circular path and restore ordinary
+  `PointsMaterial` square rendering as the safe fallback.
+
 Documentation conventions:
 
 - Keep planning/reference notes in `project-work/`.
@@ -51,6 +71,25 @@ git diff --check
 
 Export path inputs are resolved on the server with user-home and environment-variable expansion,
 so Linux inputs such as `~/Desktop/delete` produce `~/Desktop/delete.pt` for current-frame export.
+
+## Browser Download Export Notes (2026-09-09)
+
+- The active `static/editor.html` no longer asks for an editor export path. `Export Current`
+  downloads a transformed `.pt` through `/api/export_current/download`; `Export Frames` downloads
+  a ZIP of `frame_0000.pt`, `frame_0001.pt`, and so on through `/api/export/download`.
+- These browser-download routes accept the same `scale` and `color_mode` values as the path-based
+  routes. The older `/api/export_current` and `/api/export` endpoints remain available for API
+  clients that explicitly need server-side output paths.
+- Comparison export accepts optional JSON `filename`. `_clean_download_filename` rejects path
+  separators/control characters and ensures the selected `.ply`, `.pt`, or `.npy` extension is
+  applied exactly once. Blank names retain the source-based `*.transformed.<ext>` default.
+- The comparison filename field is inserted by `ensureComparisonFilenameControl()` so the compact
+  active page keeps one responsive layout for all export formats. Browser download handling reads
+  `Content-Disposition`, falls back to a deterministic name, revokes Blob URLs after click, and
+  restores button state after errors.
+- Browser smoke on 2026-09-09 used the local `frame_0000.pt` and `frame_0001.pt` fixtures: the
+  editor downloaded the current frame and ZIP, Comparison reached `Ready` with 6/4 points, and
+  `aligned_result` produced `aligned_result.ply` with no console warnings or errors.
 
 New workspaces default to one timeline frame. `POST /api/export` treats a one-frame request's `output_dir`
 value as a file path (adding `.pt` when needed), so `~/Desktop/new` writes `~/Desktop/new.pt`; multi-frame

@@ -60,7 +60,9 @@ the top toolbar keeps only **Back to Editor**. On desktop, drag the divider at t
 Comparison panel to resize it. The width is remembered locally and the divider is hidden on mobile.
 
 `POST /api/comparison/export` exports the selected Cloud A or Cloud B after the current centroid-based
-scale, ZYX rotation, and translation. The format selector supports:
+scale, ZYX rotation, and translation. The browser provides an optional file-name field; blank names
+keep the source-based default, while the server enforces a safe name and the selected extension.
+The format selector supports:
 
 - `.ply`: binary little-endian XYZ float32 plus RGB uint8.
 - `.npy`: float32 array shaped `(N, 6)` with XYZ followed by RGB in `[0, 1]`.
@@ -68,6 +70,11 @@ scale, ZYX rotation, and translation. The format selector supports:
 
 Comparison `.pt` and `.npy` exports are generic point-cloud files; they do not preserve Gaussian
 quaternions, scales, opacity, or spherical-harmonic attributes.
+
+Editor `Export Current` and `Export Frames` also use browser downloads, so they do not ask for a
+desktop/server output path. The current frame downloads as a Gaussian `.pt`; a multi-frame export
+downloads a ZIP containing one `.pt` file per frame. The existing path-based `/api/export_current`
+and `/api/export` endpoints remain available for scripted/server-side workflows.
 
 ## Architecture
 
@@ -162,7 +169,9 @@ The browser interface is backed by a small JSON/binary REST API. The principal r
 - `GET/POST/PUT/DELETE /api/parts...` for Part management and vertex assignment
 - `GET/POST/DELETE /api/keyframes/<pid>...` and `GET/PUT /api/settings`
 - `POST /api/comparison`, `GET /api/comparison/a`, `GET /api/comparison/b`, `POST /api/comparison/evaluate`, and `POST /api/comparison/export`
-- `POST /api/export`, `GET /api/export/status`, and `POST /api/export_current` (`color_mode` accepts `original` or `edited`; original source RGB is the default)
+- `POST /api/export`, `GET /api/export/status`, and `POST /api/export_current` for explicit server-side paths;
+  browser downloads use `POST /api/export/download` and `POST /api/export_current/download`
+  (`color_mode` accepts `original` or `edited`; original source RGB is the default)
 
 Binary point-cloud endpoints return compact XYZ, RGB, and Part-ID payloads for the local renderer. Comparison data is deliberately kept separate from the active editor workspace, so comparison uploads never alter Parts, animation tracks, or editor exports.
 
