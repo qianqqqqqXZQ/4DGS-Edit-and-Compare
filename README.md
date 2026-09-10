@@ -35,6 +35,25 @@ The application is intended for reconstruction and LiDAR-alignment workflows whe
 
 When explicit RGB is unavailable, spherical-harmonic DC coefficients are used to derive a display/export fallback. Comparison rendering additionally falls back to neutral gray when neither explicit RGB nor usable SH DC data is available.
 
+### Local security boundary
+
+This release is designed for **one trusted local user and one in-memory workspace**. It binds to
+<code>127.0.0.1:5011</code> by default. It does not provide authentication, authorization, or isolation
+between concurrent users. Do not expose it to a LAN or the public network unless you deliberately set
+<code>EDITOR_HOST</code> and independently provide authentication plus network isolation.
+
+<code>.pt</code> files are loaded with PyTorch's safe <code>weights_only</code> mode. Accepted checkpoints
+contain only tensors, numbers, strings, lists, tuples, and dictionaries, and must resolve to a raw point
+tensor, a gsplat-style dictionary, a nested <code>splats</code> dictionary, or a non-empty <code>frames</code>
+sequence. Checkpoints requiring arbitrary pickle classes are rejected; there is no unsafe compatibility
+fallback. All point clouds require finite, non-empty <code>(N, 3)</code> XYZ coordinates, and supplied RGB,
+Gaussian, and SH attributes must have a matching point count.
+
+The server-side directory import and legacy path-based export APIs only accept paths inside
+<code>EDITOR_ALLOWED_PATHS</code>. Without that setting, the repository directory is the only allowed root.
+The check resolves absolute paths and symlinks and rejects parent-directory traversal. Browser-download
+exports do not accept a server filesystem path.
+
 ### Typical workflow
 
 #### Edit a static or 4DGS scene
@@ -170,20 +189,40 @@ python -m pip install -r requirements.txt
 python app.py
 ~~~
 
-Open [http://localhost:5011](http://localhost:5011). The server listens on <code>0.0.0.0:5011</code>, so another device on the same network can use <code>http://&lt;host-ip&gt;:5011</code> after the host firewall allows TCP port <code>5011</code>.
+Open [http://127.0.0.1:5011](http://127.0.0.1:5011). The default listener is local-only. The following
+environment variables are available to controlled deployments:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| <code>EDITOR_HOST</code> | <code>127.0.0.1</code> | Bind address. Setting <code>0.0.0.0</code> deliberately exposes the service to reachable networks; supply authentication and network isolation yourself. |
+| <code>EDITOR_PORT</code> | <code>5011</code> | TCP port, validated as an integer in <code>1..65535</code>. |
+| <code>EDITOR_ALLOWED_PATHS</code> | repository root | Server-side path roots, separated using the platform path separator (<code>;</code> on Windows, <code>:</code> on macOS/Linux). Used by 4DGS directory import and legacy path-based exports. |
+
+For example, a Docker container that imports a mounted frame directory can retain local-only binding and
+allow only that directory plus the application root:
+
+~~~bash
+docker run --rm -p 127.0.0.1:5011:5011 \
+  -e EDITOR_HOST=0.0.0.0 \
+  -e EDITOR_ALLOWED_PATHS=/app:/data/frames \
+  -v /absolute/path/to/frames:/data/frames:ro \
+  part-level-4dgs-editor
+~~~
 
 #### Docker
 
 ~~~bash
 docker build -t part-level-4dgs-editor .
-docker run --rm -p 5011:5011 part-level-4dgs-editor
+docker run --rm -p 127.0.0.1:5011:5011 -e EDITOR_HOST=0.0.0.0 part-level-4dgs-editor
 ~~~
 
 To import a 4DGS directory in Docker, mount the host directory and enter the container path in the **4DGS Dir** dialog:
 
 ~~~bash
-docker run --rm -p 5011:5011 \
-  -v /absolute/path/to/frames:/data/frames \
+docker run --rm -p 127.0.0.1:5011:5011 \
+  -e EDITOR_HOST=0.0.0.0 \
+  -e EDITOR_ALLOWED_PATHS=/app:/data/frames \
+  -v /absolute/path/to/frames:/data/frames:ro \
   part-level-4dgs-editor
 ~~~
 
@@ -202,6 +241,21 @@ The test suite uses Flask's test client and in-memory fixtures to cover comparis
 <a id="chinese"></a>
 
 ## 中文
+
+### 本机安全边界
+
+本版本面向单个受信任的本机用户，默认仅监听 `127.0.0.1:5011`。编辑工作区保存在一个
+Flask 进程的全局内存中，因此没有登录、权限控制或多用户并发隔离。若显式设置
+`EDITOR_HOST=0.0.0.0` 以开放局域网访问，部署者必须自行提供认证和网络隔离。
+
+`.pt` 使用 PyTorch `weights_only` 安全反序列化，只接受 Tensor、数字、字符串、list、tuple、
+dict 组成的 raw Tensor、gsplat 字典、嵌套 `splats` 或非空 `frames` 格式；需要任意 pickle
+类的文件会直接拒绝，绝不会回退到不安全加载。所有输入都要求有限且非空的 `(N, 3)` XYZ，
+提供的 RGB、四元数、scale、opacity、SH 属性必须与 N 对齐。
+
+服务器目录导入与旧版服务器路径导出受 `EDITOR_ALLOWED_PATHS` 约束。未设置时仅允许项目
+根目录及其子目录；多个根目录按操作系统路径分隔符配置（Windows `;`，macOS/Linux `:`）。
+检查会拒绝 `..`、白名单外路径和符号链接逃逸。浏览器下载接口不接收服务器路径。
 
 Part-Level 4DGS Editor 是一个基于浏览器的点云与 4D Gaussian Splatting（4DGS）编辑、对齐和评估工具。Flask 后端负责文件解析、状态管理、变换、评估和导出；本地 Three.js/WebGL 前端提供交互式三维视口。
 

@@ -49,6 +49,93 @@ PART_COLORS = [
 C0 = 0.28209479177387814
 SUPPORTED_POINTCLOUD_EXTENSIONS = (".ply", ".pt", ".npy")
 
+# The editor keeps one in-memory workspace, so it is intended for a trusted
+# local user.  Bind to localhost by default; deployments that deliberately
+# expose the service must opt in with EDITOR_HOST and provide their own
+# authentication/network isolation.
+EDITOR_HOST = os.environ.get("EDITOR_HOST", "127.0.0.1").strip() or "127.0.0.1"
+
+
+def _server_port() -> int:
+    raw = os.environ.get("EDITOR_PORT", "5011").strip()
+    try:
+        port = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("EDITOR_PORT must be an integer between 1 and 65535") from exc
+    if not 1 <= port <= 65535:
+        raise RuntimeError("EDITOR_PORT must be an integer between 1 and 65535")
+    return port
+
+
+def _allowed_path_roots() -> Tuple[str, ...]:
+    """Return canonical roots allowed for server-side filesystem operations.
+
+    The default is the repository root.  A deployment can add explicitly
+    mounted directories with ``EDITOR_ALLOWED_PATHS`` (separated using the
+    platform path separator).  This function reads the environment on each
+    request so tests and process managers can configure it without relying on
+    import-time mutation.
+    """
+    configured = os.environ.get("EDITOR_ALLOWED_PATHS", "")
+    candidates = [item.strip() for item in configured.split(os.pathsep) if item.strip()]
+    if not candidates:
+        candidates = [BASE_DIR]
+    roots: List[str] = []
+    for candidate in candidates:
+        expanded = os.path.expandvars(os.path.expanduser(candidate))
+        root = os.path.realpath(os.path.abspath(expanded))
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
+
+
+def _path_is_within(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath((os.path.normcase(path), os.path.normcase(root))) == os.path.normcase(root)
+    except ValueError:
+        # Different Windows drives (or malformed paths) are never within one
+        # another.
+        return False
+
+
+def _resolve_user_path(value: str, *, must_exist: bool = False, directory: bool = False) -> str:
+    """Resolve and validate a server-side path against the configured roots.
+
+    ``realpath`` canonicalises existing path components, which prevents a
+    symlink in an allowed directory from escaping to an untrusted location.
+    Non-existent output parents are also canonicalised through their nearest
+    existing ancestor before the path is accepted.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("path must be a non-empty string")
+    raw = value.strip()
+    if "\x00" in raw:
+        raise ValueError("path contains a NUL character")
+    # Reject explicit parent-directory components before canonicalisation.  A
+    # request should name a path inside an allowed root directly; accepting a
+    # textual ``..`` component makes audit logs ambiguous and invites path
+    # traversal mistakes in callers that construct paths themselves.
+    if any(component == ".." for component in re.split(r"[\\/]", raw)):
+        raise ValueError("path traversal with '..' is not allowed")
+    expanded = os.path.expandvars(os.path.expanduser(raw))
+    candidate = os.path.abspath(expanded)
+    resolved = os.path.realpath(candidate)
+    if not any(_path_is_within(resolved, root) for root in _allowed_path_roots()):
+        raise ValueError("path is outside the configured server path allowlist")
+    if must_exist and not os.path.exists(resolved):
+        raise ValueError("path does not exist")
+    if directory and not os.path.isdir(resolved):
+        raise ValueError("path must be an existing directory")
+    return resolved
+
+
+def _json_object(default: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Read a JSON object, returning ``None`` for a non-object body."""
+    body = request.get_json(silent=True)
+    if body is None and default is not None:
+        return dict(default)
+    return body if isinstance(body, dict) else None
+
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = 400 * 1024 * 1024
 
@@ -84,16 +171,27 @@ STATE_LOCK = threading.RLock()
 COMPARISON_STATE: Dict[str, Any] = {"clouds": {"a": None, "b": None}}
 
 
-def _arr(value: Any, shape: Tuple[int, ...], default: float = 0.0) -> np.ndarray:
+def _arr(value: Any, shape: Tuple[int, ...], default: float = 0.0, *, name: str = "field",
+         allow_missing: bool = True) -> np.ndarray:
+    """Convert an attribute to an exact shape without silent truncation.
+
+    Missing optional attributes still receive the canonical default, but a
+    present attribute with the wrong number of values is rejected.  Silent
+    padding/truncation can otherwise associate one point's attributes with
+    another point and makes malformed uploads difficult to diagnose.
+    """
     if value is None:
+        if not allow_missing:
+            raise ValueError(f"{name} is required")
         return np.full(shape, default, dtype=np.float64)
-    a = np.asarray(value, dtype=np.float64)
-    if a.size == int(np.prod(shape)):
-        return a.reshape(shape)
-    out = np.full(shape, default, dtype=np.float64)
-    flat = a.reshape(-1)
-    out.reshape(-1)[: min(flat.size, out.size)] = flat[: out.size]
-    return out
+    try:
+        array = np.asarray(value, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must contain numeric values") from exc
+    expected = int(np.prod(shape))
+    if array.size != expected:
+        raise ValueError(f"{name} must contain exactly {expected} values")
+    return array.reshape(shape)
 
 
 def _field(obj: Any, names: List[str], default: Any = None) -> Any:
@@ -107,55 +205,162 @@ def _field(obj: Any, names: List[str], default: Any = None) -> Any:
     return default
 
 
-def _normalise_rgb(value: Any, n: int) -> Optional[np.ndarray]:
+def _normalise_rgb(value: Any, n: int, *, name: str = "RGB", strict: bool = False) -> Optional[np.ndarray]:
     """Normalise an explicit RGB field to an ``(n, 3)`` float array."""
     if value is None or n <= 0:
         return None
     try:
         array = value.detach().cpu().numpy() if hasattr(value, "detach") else np.asarray(value)
         array = np.asarray(array, dtype=np.float64)
-        if array.size != n * 3:
-            return None
-        array = array.reshape((n, 3))
-        if not np.isfinite(array).all():
-            return None
-        if np.max(np.abs(array)) > 1.0:
-            array = array / 255.0
-        return np.clip(array, 0.0, 1.0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        if strict:
+            raise ValueError(f"{name} must contain numeric values") from exc
         return None
+    if array.size != n * 3:
+        if strict:
+            raise ValueError(f"{name} must contain exactly {n * 3} values")
+        return None
+    array = array.reshape((n, 3))
+    if not np.isfinite(array).all():
+        if strict:
+            raise ValueError(f"{name} values must be finite")
+        return None
+    if np.max(np.abs(array)) > 1.0:
+        array = array / 255.0
+    return np.clip(array, 0.0, 1.0)
+
+
+def _normalise_sh0(value: Any, n: int, *, name: str = "SH DC coefficients") -> np.ndarray:
+    """Normalise the one DC SH coefficient per point.
+
+    Common gsplat/3DGS checkpoints use ``(N, 3)``, ``(N, 1, 3)`` or
+    ``(N, 3, 1)``.  Other shapes are rejected with a dimension-specific error
+    rather than being flattened into an unrelated coefficient layout.
+    """
+    if value is None:
+        return np.zeros((n, 3), dtype=np.float64)
+    try:
+        array = value.detach().cpu().numpy() if hasattr(value, "detach") else np.asarray(value)
+        array = np.asarray(array, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must contain numeric values") from exc
+    if array.shape == (n, 3):
+        result = array
+    elif array.shape == (n, 1, 3):
+        result = array[:, 0, :]
+    elif array.shape == (n, 3, 1):
+        result = array[:, :, 0]
+    else:
+        raise ValueError(f"{name} must have shape (N, 3), (N, 1, 3), or (N, 3, 1)")
+    if not np.isfinite(result).all():
+        raise ValueError(f"{name} must be finite")
+    return result
+
+
+def _normalise_sh_rest(value: Any, n: int, *, name: str = "SH rest coefficients") -> Optional[np.ndarray]:
+    """Normalise SH rest coefficients while preserving the point dimension.
+
+    gsplat checkpoints commonly store this field as ``(N, K, 3)`` or as a
+    flattened ``(N, K * 3)`` tensor.  A few exporters use ``(K, N, 3)``;
+    that layout is accepted explicitly, but every other layout is rejected
+    instead of being silently reshaped or padded.
+    """
+    if value is None:
+        return None
+    try:
+        array = value.detach().cpu().numpy() if hasattr(value, "detach") else np.asarray(value)
+        array = np.asarray(array, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must contain numeric values") from exc
+    if array.ndim == 2 and array.shape[0] == n and array.shape[1] % 3 == 0:
+        array = array.reshape((n, -1, 3))
+    elif array.ndim == 3 and array.shape[0] == n and array.shape[2] == 3:
+        array = array.reshape((n, -1, 3))
+    elif array.ndim == 3 and array.shape[0] != n and array.shape[1] == n and array.shape[2] == 3:
+        array = np.transpose(array, (1, 0, 2))
+    else:
+        raise ValueError(f"{name} must have shape (N, K, 3) or (N, K*3)")
+    if not np.isfinite(array).all():
+        raise ValueError(f"{name} must be finite")
+    return array
+
+
+def _assert_safe_torch_value(value: Any, *, location: str = "checkpoint") -> None:
+    """Reject values that are not representable by a safe weights-only load."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return
+    if torch is not None and isinstance(value, torch.Tensor):
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"Unsafe .pt checkpoint: {location} keys must be strings")
+            _assert_safe_torch_value(item, location=f"{location}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _assert_safe_torch_value(item, location=f"{location}[{index}]")
+        return
+    raise ValueError(f"Unsafe .pt checkpoint: unsupported value at {location} ({type(value).__name__})")
+
+
+def _normalise_sh_degree(value: Any, sh_rest: Optional[np.ndarray]) -> int:
+    """Validate a declared SH degree against the supplied rest coefficients."""
+    coefficients = 0 if sh_rest is None else int(sh_rest.shape[1])
+    if value is None:
+        degree = int(math.sqrt(coefficients + 1)) - 1 if coefficients else 0
+    else:
+        try:
+            raw = value.detach().cpu().item() if hasattr(value, "detach") else value
+            degree_float = float(raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("SH degree must be a finite non-negative integer") from exc
+        if not math.isfinite(degree_float) or not degree_float.is_integer() or degree_float < 0:
+            raise ValueError("SH degree must be a finite non-negative integer")
+        degree = int(degree_float)
+    expected = (degree + 1) ** 2 - 1
+    if coefficients != expected:
+        raise ValueError(
+            f"SH rest coefficient dimension ({coefficients}) does not match SH degree {degree} (expected {expected})"
+        )
+    return degree
 
 
 def _normalise_frame(obj: Any) -> Dict[str, Any]:
     xyz = _field(obj, ["xyz", "means3D", "means", "positions", "pos", "points"])
     if xyz is None and isinstance(obj, (list, tuple)) and len(obj) >= 1:
         xyz = obj[0]
-    xyz = np.asarray(xyz if xyz is not None else np.zeros((0, 3)), dtype=np.float64)
-    if xyz.ndim == 1:
-        xyz = xyz.reshape((-1, 3))
-    if xyz.shape[-1] > 3:
-        xyz = xyz[:, :3]
+    if xyz is None:
+        raise ValueError("Point-cloud data must include an XYZ/means field")
+    try:
+        xyz = np.asarray(xyz, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("XYZ coordinates must contain numeric values") from exc
+    if xyz.ndim != 2 or xyz.shape[1] != 3:
+        raise ValueError("XYZ coordinates must have shape (N, 3)")
+    if len(xyz) <= 0:
+        raise ValueError("Point-cloud data must contain at least one vertex")
+    if not np.isfinite(xyz).all():
+        raise ValueError("XYZ coordinates must be finite")
     n = len(xyz)
     quats = _field(obj, ["quats", "rotation", "rotations", "rots"])
-    quats = _arr(quats, (n, 4), 0.0)
+    quats = _arr(quats, (n, 4), 0.0, name="quaternions")
     if quats.size and np.allclose(quats, 0):
         quats[:, 0] = 1.0
+    if not np.isfinite(quats).all():
+        raise ValueError("quaternion values must be finite")
     scales = _field(obj, ["scales", "scale", "scaling"])
-    scales = _arr(scales, (n, 3), 0.0)
+    scales = _arr(scales, (n, 3), 0.0, name="scales")
+    if not np.isfinite(scales).all():
+        raise ValueError("scale values must be finite")
     opacities = _field(obj, ["opacities", "opacity", "alpha"])
-    opacities = _arr(opacities, (n,), 0.0)
-    explicit_colors = _normalise_rgb(_field(obj, ["colors", "rgb", "color"]), n)
-    sh0 = _field(obj, ["sh0", "features_dc", "colors", "rgb", "color"])
-    sh0 = _arr(sh0, (n, 3), 0.0)
-    sh_rest = _field(obj, ["sh_rest", "features_rest"])
-    if sh_rest is not None:
-        sr = np.asarray(sh_rest, dtype=np.float64)
-        if sr.ndim == 2 and sr.shape[0] == n:
-            sr = sr.reshape((n, -1, 3)) if sr.shape[1] % 3 == 0 else None
-        elif sr.ndim == 3 and sr.shape[0] != n and sr.shape[1] == n:
-            sr = np.transpose(sr, (1, 0, 2))
-        sh_rest = sr
-    degree = int(_field(obj, ["sh_degree", "degree"], 0) or 0)
+    opacities = _arr(opacities, (n,), 0.0, name="opacities")
+    if not np.isfinite(opacities).all():
+        raise ValueError("opacity values must be finite")
+    explicit_colors = _normalise_rgb(_field(obj, ["colors", "rgb", "color"]), n, strict=True)
+    sh0 = _normalise_sh0(_field(obj, ["sh0", "features_dc", "colors", "rgb", "color"]), n)
+    sh_rest = _normalise_sh_rest(_field(obj, ["sh_rest", "features_rest", "shN"]), n)
+    degree = _normalise_sh_degree(_field(obj, ["sh_degree", "degree"]), sh_rest)
     return {"xyz": xyz, "quats": quats, "scales": scales, "opacities": opacities,
             "sh0": sh0, "sh_rest": sh_rest, "sh_degree": degree, "n_vertices": n,
             "colors": explicit_colors, "has_colors": explicit_colors is not None}
@@ -164,31 +369,77 @@ def _normalise_frame(obj: Any) -> Dict[str, Any]:
 def load_ply_bytes(data: bytes) -> Dict[str, Any]:
     if PlyData is None:
         raise RuntimeError("plyfile is required to read PLY files. Install with: pip install plyfile")
-    ply = PlyData.read(io.BytesIO(data))
-    vertex = ply["vertex"]
+    try:
+        ply = PlyData.read(io.BytesIO(data))
+        vertex = ply["vertex"]
+    except Exception as exc:
+        raise ValueError(f"Invalid PLY file: {exc}") from exc
     names = set(vertex.data.dtype.names or [])
+    for axis in ("x", "y", "z"):
+        if axis not in names:
+            raise ValueError("PLY vertex data must include x, y, and z properties")
     xyz = np.stack([vertex[axis] for axis in ("x", "y", "z")], axis=1).astype(np.float64)
     n = len(xyz)
-    has_colors = all(c in names for c in ("red", "green", "blue"))
+    if n <= 0:
+        raise ValueError("PLY point cloud must contain at least one vertex")
+    if not np.isfinite(xyz).all():
+        raise ValueError("PLY XYZ coordinates must be finite")
+    rgb_keys = ("red", "green", "blue")
+    rgb_presence = [key in names for key in rgb_keys]
+    if any(rgb_presence) and not all(rgb_presence):
+        raise ValueError("PLY RGB properties must include red, green, and blue")
+    has_colors = all(rgb_presence)
     colors = np.zeros((n, 3), dtype=np.float64) if has_colors else None
     if has_colors:
         for i, c in enumerate(("red", "green", "blue")):
             channel = np.asarray(vertex[c], dtype=np.float64)
-            colors[:, i] = channel / (255.0 if np.max(channel) > 1.0 else 1.0)
+            if channel.shape != (n,):
+                raise ValueError(f"PLY RGB channel {c} must contain exactly {n} values")
+            if not np.isfinite(channel).all():
+                raise ValueError("PLY RGB values must be finite")
+            colors[:, i] = channel / (255.0 if np.max(np.abs(channel)) > 1.0 else 1.0)
     quats = np.zeros((n, 4), dtype=np.float64); quats[:, 0] = 1.0
     qnames = [("rot_0", 0), ("rot_1", 1), ("rot_2", 2), ("rot_3", 3)]
+    present_quaternions = [k for k, _ in qnames if k in names]
+    if present_quaternions and len(present_quaternions) != len(qnames):
+        raise ValueError("PLY quaternion properties must include rot_0, rot_1, rot_2, and rot_3")
     if all(k in names for k, _ in qnames):
         quats = np.stack([vertex[k] for k, _ in qnames], axis=1).astype(np.float64)
+        if not np.isfinite(quats).all():
+            raise ValueError("PLY quaternion values must be finite")
     scale_names = [("scale_0", "scale_x"), ("scale_1", "scale_y"), ("scale_2", "scale_z")]
+    scale_presence = [any(name in names for name in aliases) for aliases in scale_names]
+    if any(scale_presence) and not all(scale_presence):
+        raise ValueError("PLY scale properties must provide all three scale components")
     scales = np.stack([np.asarray(vertex[next(name for name in aliases if name in names)], dtype=np.float64) if any(name in names for name in aliases) else np.zeros(n) for aliases in scale_names], axis=1)
+    if not np.isfinite(scales).all():
+        raise ValueError("PLY scale values must be finite")
     opacities = np.asarray(vertex["opacity"], dtype=np.float64) if "opacity" in names else np.zeros(n)
+    if opacities.shape != (n,) or not np.isfinite(opacities).all():
+        raise ValueError("PLY opacity must contain exactly N finite values")
     sh0 = np.zeros((n, 3), dtype=np.float64)
-    for i, key in enumerate(("f_dc_0", "f_dc_1", "f_dc_2")):
+    dc_keys = ("f_dc_0", "f_dc_1", "f_dc_2")
+    dc_presence = [key in names for key in dc_keys]
+    if any(dc_presence) and not all(dc_presence):
+        raise ValueError("PLY SH DC properties must include f_dc_0, f_dc_1, and f_dc_2")
+    for i, key in enumerate(dc_keys):
         if key in names: sh0[:, i] = np.asarray(vertex[key], dtype=np.float64)
-    rest_keys = sorted([k for k in names if k.startswith("f_rest_")], key=lambda x: int(x.split("_")[-1]))
+    if not np.isfinite(sh0).all():
+        raise ValueError("PLY SH DC coefficients must be finite")
+    try:
+        rest_keys = sorted([k for k in names if k.startswith("f_rest_")], key=lambda x: int(x.split("_")[-1]))
+    except ValueError as exc:
+        raise ValueError("PLY SH rest property names must end in a numeric index") from exc
     sh_rest = None
-    if rest_keys and len(rest_keys) % 3 == 0:
+    if rest_keys and len(rest_keys) % 3 != 0:
+        raise ValueError("PLY SH rest properties must contain a multiple of three channels")
+    if rest_keys:
+        rest_indices = [int(key.split("_")[-1]) for key in rest_keys]
+        if rest_indices != list(range(len(rest_indices))):
+            raise ValueError("PLY SH rest properties must use consecutive indices starting at f_rest_0")
         sh_rest = np.stack([vertex[k] for k in rest_keys], axis=1).reshape((n, -1, 3)).astype(np.float64)
+        if not np.isfinite(sh_rest).all():
+            raise ValueError("PLY SH rest coefficients must be finite")
     n_rest = int(sh_rest.shape[1] * 3) if sh_rest is not None else 0
     degree = int(math.sqrt(n_rest // 3 + 1)) - 1 if n_rest else 0
     return {"xyz": xyz, "quats": quats, "scales": scales, "opacities": opacities,
@@ -199,43 +450,55 @@ def load_ply_bytes(data: bytes) -> Dict[str, Any]:
 def load_pt_bytes(data: bytes) -> Dict[str, Any]:
     if torch is None:
         raise RuntimeError("PyTorch is required to read .pt files. Install torch first.")
-    obj = torch.load(io.BytesIO(data), map_location="cpu", weights_only=False)
+    try:
+        obj = torch.load(io.BytesIO(data), map_location="cpu", weights_only=True)
+    except Exception as exc:
+        raise ValueError(f"Unsafe or unreadable .pt checkpoint: {exc}") from exc
+    try:
+        _assert_safe_torch_value(obj)
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"Unsafe .pt checkpoint: {exc}") from exc
     if isinstance(obj, torch.Tensor):
-        if obj.ndim != 2 or obj.shape[1] < 3:
-            raise ValueError("Raw .pt tensors must have shape (N, >=3).")
+        if obj.ndim != 2 or obj.shape[1] < 3 or obj.shape[0] <= 0:
+            raise ValueError("Raw .pt tensors must have shape (N, >=3) with N > 0.")
         # Raw tensors are simple point rows: xyz, optional RGB, then ignored fields.
         raw = obj.detach().cpu().numpy()
         obj = {"xyz": raw[:, :3]}
         if raw.shape[1] >= 6:
             obj["colors"] = raw[:, 3:6]
-    if isinstance(obj, dict) and "frames" in obj and isinstance(obj["frames"], (list, tuple)):
-        obj = obj["frames"][0]
+    elif not isinstance(obj, (dict, list, tuple)):
+        raise ValueError(".pt checkpoint root must be a Tensor, dict, list, or tuple")
+    if isinstance(obj, dict) and "frames" in obj:
+        frames = obj["frames"]
+        if not isinstance(frames, (list, tuple)) or not frames:
+            raise ValueError(".pt checkpoint frames must be a non-empty list or tuple")
+        obj = frames[0]
     if isinstance(obj, dict) and isinstance(obj.get("splats"), dict):
         splats = obj["splats"]
         obj = {**splats, "sh_degree": obj.get("sh_degree", 0)}
-    if isinstance(obj, (list, tuple)) and obj and isinstance(obj[0], (dict, tuple, list)):
+    if isinstance(obj, (list, tuple)):
+        if not obj or not isinstance(obj[0], (dict, tuple, list, torch.Tensor)):
+            raise ValueError(".pt checkpoint list/tuple must contain a point-cloud frame")
         obj = obj[0]
     def to_np(v):
         return v.detach().cpu().numpy() if hasattr(v, "detach") else v
     if isinstance(obj, dict):
         obj = {k: to_np(v) for k, v in obj.items()}
+    elif not isinstance(obj, (list, tuple)):
+        raise ValueError(".pt checkpoint frame must be a dict, list, tuple, or Tensor")
     frame = _normalise_frame(obj)
-    if isinstance(obj, dict) and "sh0" in obj:
-        frame["sh0"] = np.asarray(obj["sh0"], dtype=np.float64).reshape((frame["n_vertices"], -1, 3))[:, 0, :]
-    if isinstance(obj, dict) and "shN" in obj:
-        sr = np.asarray(obj["shN"], dtype=np.float64)
-        if sr.size == 0:
-            frame["sh_rest"] = None
-        elif sr.ndim == 2:
-            frame["sh_rest"] = sr.reshape((frame["n_vertices"], -1, 3))
-        elif sr.ndim == 3 and sr.shape[0] == frame["n_vertices"]:
-            frame["sh_rest"] = sr.reshape((frame["n_vertices"], -1, 3))
+    if isinstance(obj, dict):
+        if "sh0" in obj or "features_dc" in obj:
+            frame["sh0"] = _normalise_sh0(_field(obj, ["sh0", "features_dc"]), frame["n_vertices"])
+        if "shN" in obj or "sh_rest" in obj or "features_rest" in obj:
+            frame["sh_rest"] = _normalise_sh_rest(_field(obj, ["shN", "sh_rest", "features_rest"]), frame["n_vertices"])
     # Re-check explicit RGB after flattening nested checkpoints and normalise
     # common 0..255 tensors without changing the SH values used for export.
     if isinstance(obj, dict):
-        frame["colors"] = _normalise_rgb(_field(obj, ["colors", "rgb", "color"]), frame["n_vertices"])
+        frame["colors"] = _normalise_rgb(_field(obj, ["colors", "rgb", "color"]), frame["n_vertices"], strict=True)
         frame["has_colors"] = frame["colors"] is not None
-    frame["sh_degree"] = int(obj.get("sh_degree", frame.get("sh_degree", 0))) if isinstance(obj, dict) else frame.get("sh_degree", 0)
     return frame
 
 
@@ -623,15 +886,6 @@ def _clean_scale(value: Any = 1.0) -> float:
     return scale
 
 
-def _resolve_user_path(value: str) -> str:
-    """Resolve a path entered in the UI to the server's local absolute path.
-
-    ``expanduser`` handles Linux inputs such as ``~/Desktop/delete`` and
-    ``expandvars`` handles common ``$HOME``/``%USERPROFILE%`` forms.
-    """
-    return os.path.abspath(os.path.expanduser(os.path.expandvars(value.strip())))
-
-
 _DOWNLOAD_FILENAME_INVALID = re.compile(r'[\\/\x00-\x1f\x7f<>:"|?*]')
 
 
@@ -871,18 +1125,10 @@ def api_upload():
     if not files:
         files = request.files.getlist("files")  # Compatibility with the existing browser UI.
     if not files: return jsonify({"error": "没有收到文件"}), 400
-    parsed_files = []
-    upload_dir = tempfile.mkdtemp(prefix="upload_", dir=UPLOAD_ROOT)
     try:
-        for uploaded in files:
-            filename = os.path.basename(uploaded.filename or "")
-            ext = os.path.splitext(filename)[1].lower()
-            if ext not in SUPPORTED_POINTCLOUD_EXTENSIONS:
-                return jsonify({"error": f"Unsupported file type: {filename or '<unnamed>'}"}), 400
-            upload_path = os.path.join(upload_dir, filename)
-            uploaded.save(upload_path)
-            parsed_files.append((filename, _load_pointcloud_path(upload_path, ext)))
-    except Exception as exc: return jsonify({"error": str(exc)}), 400
+        parsed_files = _load_uploaded_pointclouds(files)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
     if not parsed_files: return jsonify({"error": "没有有效的 .ply、.pt 或 .npy 文件"}), 400
     first = parsed_files[0][0]
     parsed = {}
@@ -921,18 +1167,21 @@ def _load_uploaded_pointclouds(uploaded_files) -> List[Tuple[str, Dict[str, Any]
     """Save incoming files under the temporary upload root and load canonical point clouds."""
     upload_dir = tempfile.mkdtemp(prefix="upload_", dir=UPLOAD_ROOT)
     parsed_files = []
-    for sequence, uploaded in enumerate(uploaded_files):
-        filename = os.path.basename(uploaded.filename or "")
-        extension = os.path.splitext(filename)[1].lower()
-        if not filename or extension not in SUPPORTED_POINTCLOUD_EXTENSIONS:
-            raise ValueError(f"Unsupported file type: {filename or '<unnamed>'}")
-        saved_name = filename if not os.path.exists(os.path.join(upload_dir, filename)) else f"{sequence}_{filename}"
-        saved_path = os.path.join(upload_dir, saved_name)
-        uploaded.save(saved_path)
-        parsed_files.append((filename, _load_pointcloud_path(saved_path, extension)))
-    if not parsed_files:
-        raise ValueError("No .ply, .pt, or .npy files were provided")
-    return parsed_files
+    try:
+        for sequence, uploaded in enumerate(uploaded_files):
+            filename = os.path.basename(uploaded.filename or "")
+            extension = os.path.splitext(filename)[1].lower()
+            if not filename or extension not in SUPPORTED_POINTCLOUD_EXTENSIONS:
+                raise ValueError(f"Unsupported file type: {filename or '<unnamed>'}")
+            saved_name = filename if not os.path.exists(os.path.join(upload_dir, filename)) else f"{sequence}_{filename}"
+            saved_path = os.path.join(upload_dir, saved_name)
+            uploaded.save(saved_path)
+            parsed_files.append((filename, _load_pointcloud_path(saved_path, extension)))
+        if not parsed_files:
+            raise ValueError("No .ply, .pt, or .npy files were provided")
+        return parsed_files
+    finally:
+        shutil.rmtree(upload_dir, ignore_errors=True)
 
 
 @app.post("/api/upload_append")
@@ -980,11 +1229,14 @@ def api_upload_append():
 
 @app.post("/api/upload_4dgs")
 def api_upload_4dgs():
-    body = request.get_json(silent=True) or {}
+    body = _json_object({})
+    if body is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     dir_path = body.get("dir_path")
     if not isinstance(dir_path, str) or not dir_path:
         return jsonify({"error": "dir_path is required"}), 400
     try:
+        dir_path = _resolve_user_path(dir_path, must_exist=True, directory=True)
         source = load_4dgs_dir(dir_path)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
@@ -1735,7 +1987,9 @@ def _export_frame_payload(frame: int, scale: float = 1.0, color_mode: str = "ori
 
 @app.post("/api/export")
 def api_export():
-    body = request.get_json(silent=True) or {}
+    body = _json_object({})
+    if body is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     output_dir = body.get("output_dir")
     if not isinstance(output_dir, str) or not output_dir.strip():
         return jsonify({"error": "output_dir is required"}), 400
@@ -1752,10 +2006,10 @@ def api_export():
         frame_count = int(STATE["num_frames"])
         single_file = frame_count == 1
         output_path = output_dir if output_dir.lower().endswith(".pt") else output_dir + ".pt"
-        output_target = _resolve_user_path(output_path if single_file else output_dir)
         try:
+            output_target = _resolve_user_path(output_path if single_file else output_dir)
             os.makedirs(os.path.dirname(output_target) if single_file else output_target, exist_ok=True)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 400
         STATE["export_active"] = True
         STATE["export_done"] = False
@@ -1795,7 +2049,9 @@ def api_export_status():
 
 @app.post("/api/export_current")
 def api_export_current_v2():
-    body = request.get_json(silent=True) or {}
+    body = _json_object({})
+    if body is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     output_path = body.get("output_path")
     if not isinstance(output_path, str) or not output_path.strip():
         return jsonify({"error": "output_path is required"}), 400
@@ -1813,9 +2069,9 @@ def api_export_current_v2():
         if not STATE["loaded"] or not _workspace_has_data():
             return jsonify({"error": "No point-cloud data is loaded"}), 400
         frame = max(0, min(frame, max(0, STATE["num_frames"] - 1)))
-        output_path = output_path if output_path.lower().endswith(".pt") else output_path + ".pt"
-        output_path = _resolve_user_path(output_path)
         try:
+            output_path = output_path if output_path.lower().endswith(".pt") else output_path + ".pt"
+            output_path = _resolve_user_path(output_path)
             os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
             payload = _export_frame_payload(frame, scale=scale, color_mode=color_mode)
             _write_pt(output_path, payload)
@@ -1958,16 +2214,35 @@ def api_import_4dgs():
 @app.post("/api/export/current")
 def api_export_current():
     if torch is None: return jsonify({"error": "PyTorch 未安装，无法导出"}), 400
-    frame = int((request.get_json(silent=True) or {}).get("frame", 0)); payload = frame_payload(frame)
-    path = os.path.join(EXPORT_ROOT, f"frame_{frame:04d}.pt")
-    _write_pt(path, frame_data(frame)); return jsonify({"path": path, "filename": os.path.basename(path), "download": f"/api/download/current/{frame}"})
+    body = _json_object({})
+    if body is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+    try:
+        frame = int(body.get("frame", 0))
+        requested = body.get("output_path", os.path.join(EXPORT_ROOT, f"frame_{frame:04d}.pt"))
+        path = _resolve_user_path(requested)
+        if not path.lower().endswith(".pt"):
+            path = _resolve_user_path(path + ".pt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _write_pt(path, frame_data(frame))
+    except (TypeError, ValueError, OSError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"path": path, "filename": os.path.basename(path), "download": f"/api/download/current/{frame}"})
 
 @app.post("/api/export/all")
 def api_export_all():
     if torch is None: return jsonify({"error": "PyTorch 未安装，无法导出"}), 400
+    body = _json_object({})
+    if body is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+    try:
+        output_root = _resolve_user_path(body.get("output_dir", EXPORT_ROOT))
+        os.makedirs(output_root, exist_ok=True)
+    except (TypeError, ValueError, OSError) as exc:
+        return jsonify({"error": str(exc)}), 400
     def worker():
         with STATE_LOCK: STATE["export_progress"] = 0; count = STATE["num_frames"]
-        out = tempfile.mkdtemp(prefix="4dgs_export_", dir=EXPORT_ROOT)
+        out = tempfile.mkdtemp(prefix="4dgs_export_", dir=output_root)
         for i in range(count):
             _write_pt(os.path.join(out, f"frame_{i:04d}.pt"), frame_data(i))
             with STATE_LOCK: STATE["export_progress"] = int((i+1)*100/count)
@@ -2038,4 +2313,4 @@ init3d();refresh();
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5011, debug=False, threaded=True)
+    app.run(host=EDITOR_HOST, port=_server_port(), debug=False, threaded=True)

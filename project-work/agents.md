@@ -18,6 +18,28 @@ the root route serves the static editor when it is present.
 - `project-work/`: maintained planning and project-reference documents.
 - `requirements.txt`: Flask, NumPy, plyfile, and PyTorch dependencies.
 
+## Trusted Input And Local Boundary (2026-09-10)
+
+- This application has one global in-memory workspace and is deliberately a single-user local tool. The
+  default listener is `127.0.0.1:5011`; `EDITOR_HOST` and `EDITOR_PORT` override the bind address and port.
+  An operator who explicitly exposes it to a LAN must provide authentication and network isolation, because
+  the application does not add either multi-user sessions or authorization.
+- `EDITOR_ALLOWED_PATHS` defines the roots accepted by server-path APIs, separated by the host platform's
+  path separator (`;` on Windows and `:` on POSIX). With no setting, only the repository root is allowed.
+  `_resolve_user_path()` expands variables, rejects `..`, canonicalizes absolute paths with `realpath`, and
+  rejects paths and symlink targets outside those roots. `/api/upload_4dgs`, `/api/export`,
+  `/api/export_current`, and legacy `/api/export/current` plus `/api/export/all` all use this check.
+- `load_pt_bytes()` uses `torch.load(..., weights_only=True)` only. It accepts safe tensors/scalars/strings
+  and nested list/tuple/dict checkpoint data that resolves to a raw Tensor, flat gsplat dictionary, nested
+  `splats`, or non-empty `frames` format. It never falls back to arbitrary pickle loading.
+- Canonical input validation requires finite, non-empty `(N, 3)` XYZ data. Present quaternion, scale,
+  opacity, RGB, SH DC, and SH-rest arrays must have a compatible `N`; malformed arrays are rejected instead
+  of being truncated or zero-padded. Upload temporary directories are removed in `_load_uploaded_pointclouds()`
+  on both parse success and failure. Existing `generated/` exports and evaluation reports are retained; a
+  future retention policy can manage those persistent user artifacts without changing current behavior.
+- Use `D:\Develop\Python\CPython\Python313\python.exe` directly in this workspace when the `py -3.13`
+  launcher cannot locate its installed runtime. The normal project command remains `py -3.13` elsewhere.
+
 ## Transform Numeric Input Contract (2026-09-09)
 
 - The active UI in `static/editor.html` uses text inputs for Part TX/TY/TZ/RX/RY/RZ, Comparison A/B
@@ -112,8 +134,8 @@ py -3.13 -m py_compile app.py
 git diff --check
 ```
 
-Export path inputs are resolved on the server with user-home and environment-variable expansion,
-so Linux inputs such as `~/Desktop/delete` produce `~/Desktop/delete.pt` for current-frame export.
+Path-based export inputs are resolved only inside `EDITOR_ALLOWED_PATHS`; user-home and environment-variable
+expansion is supported only when the resulting canonical path remains in an allowed root.
 
 ## Browser Download Export Notes (2026-09-09)
 
@@ -140,9 +162,9 @@ requests retain directory output with `frame_0000.pt`, `frame_0001.pt`, and so o
 
 ## Linux Compatibility (2026-08-17)
 
-- The backend has no Windows-specific paths or system commands. `app.py` listens on
-  `0.0.0.0:5011`, so the same Flask entry point works on Linux and can be reached from the
-  network when firewall rules permit it.
+- The backend has no Windows-specific paths or system commands. `app.py` defaults to
+  `127.0.0.1:5011` on Linux and Windows; an operator must explicitly set `EDITOR_HOST` before network
+  exposure and must supply the missing authentication/network isolation controls.
 - `requirements.txt` uses platform-independent Python packages and PyTorch from regular PyPI. The
   documented native path targets 64-bit Ubuntu/Debian with Python 3.10+ and a glibc-based
   distribution. CUDA is not required for parsing or export.

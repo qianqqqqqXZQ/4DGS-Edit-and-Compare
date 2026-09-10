@@ -1,5 +1,42 @@
 # Part-Level 4DGS Animation Editor Plan
 
+## Current Request: First Batch - Security Boundary And Trusted Input Hardening (2026-09-10)
+
+- [x] Create a recoverable Git checkpoint before security work, preserving prior working-document changes (`059c7fc`).
+- [x] Bind Flask to `127.0.0.1` by default and add validated `EDITOR_HOST` / `EDITOR_PORT` configuration.
+- [x] Replace unsafe `.pt` deserialization with `weights_only=True`, accepting only documented safe raw Tensor,
+  gsplat, nested `splats`, and `frames` structures without a pickle fallback.
+- [x] Validate PLY/PT/NPY canonical XYZ and supplied Gaussian/RGB/SH properties strictly; reject empty,
+  non-finite, unknown, or point-count-mismatched input with HTTP 400 responses.
+- [x] Add the `EDITOR_ALLOWED_PATHS` canonical allowlist and route all server-path 4DGS/import and export APIs,
+  including the old compatibility exports, through it.
+- [x] Remove temporary upload directories after successful and failed parsing while retaining user exports in
+  `generated/` and documenting the future retention-policy boundary.
+- [x] Add Flask test-client coverage for safe checkpoint formats, unsafe pickles, malformed point clouds,
+  allowlist/path traversal/symlink behavior, compatibility exports, and temporary upload cleanup.
+- [x] Update README and project reference notes with the local-only, single-user deployment contract and Docker
+  allowed-path configuration.
+- [x] Run the final Python/frontend/diff checks, local smoke verification, and focused code review.
+- [ ] Commit the independently verified feature change (current Codex session has read-only `.git` metadata;
+  `git add` could not create `.git/index.lock`).
+
+2026-09-10 verification completed:
+
+- Used `D:\Develop\Python\CPython\Python313\python.exe` because this machine's `py -3.13` launcher did not
+  locate the otherwise installed 3.13 runtime. Python compilation covered `app.py` and every `tests/test_*.py`;
+  `unittest discover -s tests -p 'test_*.py' -v` passed all 18 tests, including the 8 security-hardening tests.
+- The security suite verified raw Tensor, flat gsplat, nested `splats`, and nested `frames` checkpoints; malformed
+  XYZ/RGB/SH fields; an unexecuted arbitrary-pickle payload; default and explicit allowlists; parent traversal;
+  Windows directory-junction symlink escape; all relevant path-based export routes; 4DGS import; and successful
+  plus failed temporary upload cleanup.
+- Parsed `static/editor.html`'s active inline JavaScript with Node `new Function` and ran `git diff --check`.
+  A local Flask/Puppeteer smoke test bound the default local listener, uploaded `generated/frame_0000.pt`, loaded
+  Comparison A/B (`6` / `4` points), imported the allowlisted `generated/` 4DGS directory, and triggered current
+  frame plus ZIP browser-download workflows with no application console errors.
+- Focused review found no remaining `weights_only=False` call, no server-path entry bypassing
+  `_resolve_user_path()`, and no upload path that retains its temporary parse directory. Persistent exports and
+  evaluation reports remain deliberately outside this batch's cleanup scope.
+
 ## Current Request: Standardize repository README (2026-09-09)
 
 - [x] Create a recoverable Git checkpoint before replacing repository documentation (`7fd7ca0`).
