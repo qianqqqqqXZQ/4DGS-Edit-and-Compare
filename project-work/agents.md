@@ -175,6 +175,17 @@ expansion is supported only when the resulting canonical path remains in an allo
   without layout overflow. Backend regression verifies a requested `.zip` current-frame name becomes `.pt`, a
   requested `.pt` archive name becomes `.zip`, and both editor download routes reject filename paths.
 
+## Unified Export Dialog Notes (2026-09-10)
+
+- `Export Current`, `Export All`, and Comparison `Export selected` collect their optional download name only
+  after the user clicks the export command. Opening any dialog clears and focuses its name field; Cancel sends
+  no request.
+- Comparison keeps Cloud A/B selection and output-format choice in the sidebar. Opening its dialog snapshots
+  the selected cloud, output extension, and transform, displays the chosen target/format, and submits that
+  snapshot only when Download is confirmed. The former sidebar filename control is intentionally absent.
+- Browser-download APIs and `_clean_download_filename()` remain the single source of truth for default names,
+  extension normalization, and invalid-path rejection.
+
 New workspaces default to one timeline frame. `POST /api/export` treats a one-frame request's `output_dir`
 value as a file path (adding `.pt` when needed), so `~/Desktop/new` writes `~/Desktop/new.pt`; multi-frame
 requests retain directory output with `frame_0000.pt`, `frame_0001.pt`, and so on.

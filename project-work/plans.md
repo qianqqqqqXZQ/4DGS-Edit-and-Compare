@@ -238,6 +238,25 @@
 
 - `py -3.13 -m py_compile app.py tests/test_export_downloads.py`
 - `py -3.13 -m unittest discover -s tests -p "test_*.py"` (10 tests passed)
+
+## Current Request: Unified export naming dialogs (2026-09-10)
+
+- [x] Create a recoverable Git checkpoint before changing export interactions (`573c98f`).
+- [x] Keep editor export naming inside the Current/All download dialogs and reset/focus the field when opened.
+- [x] Move Comparison export naming out of the sidebar and into a confirmation dialog opened by Export selected.
+- [x] Keep existing filename validation, extension normalization, and optional default names unchanged.
+- [x] Run API/frontend syntax checks, full tests, browser interaction smoke tests, diff validation, and focused review.
+
+2026-09-10 verification completed:
+
+- `node --check` passed for both inline editor scripts and `py -3.13 -m py_compile app.py tests/test_export_downloads.py` passed.
+- `py -3.13 -m unittest discover -s tests -p "test_*.py" -v` passed (29 tests), including blank-name
+  defaults, extension normalization, and unsafe filename rejection.
+- Browser smoke with a temporary two-point local PLY confirmed Current and All open focused empty name dialogs;
+  Comparison has no sidebar filename input, opens its target/format dialog from Export selected, and downloaded
+  `comparison_smoke.ply` after a requested `comparison_smoke.pt` name.
+- `git diff --check` and `git diff --check 573c98f` passed. Focused review found no remaining behavior,
+  state-snapshot, filename-validation, or API-compatibility issues.
 - Active `static/editor.html` inline JavaScript parsed successfully with Node `--check`.
 - Flask test-client checks confirmed current-frame `.pt` and all-frame `.zip` responses are
   browser downloads without a server output path, and Comparison accepts `aligned_result.ply`

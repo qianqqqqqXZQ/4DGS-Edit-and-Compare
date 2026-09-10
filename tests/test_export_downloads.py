@@ -55,6 +55,15 @@ class ExportDownloadTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("animated_scene.pt", response.headers["Content-Disposition"])
 
+    def test_blank_editor_download_names_use_source_defaults(self):
+        current = self.client.post("/api/export_current/download", json={"filename": "   "})
+        self.assertEqual(current.status_code, 200)
+        self.assertIn("scene.frame_0000.pt", current.headers["Content-Disposition"])
+
+        archive = self.client.post("/api/export/download", json={"filename": ""})
+        self.assertEqual(archive.status_code, 200)
+        self.assertIn("scene.frames.zip", archive.headers["Content-Disposition"])
+
     def test_all_frames_download_returns_zip_without_server_path(self):
         response = self.client.post(
             "/api/export/download",
@@ -88,6 +97,13 @@ class ExportDownloadTests(unittest.TestCase):
         )
         self.assertEqual(named.status_code, 200)
         self.assertIn("aligned_result.ply", named.headers["Content-Disposition"])
+
+        default_name = self.client.post(
+            "/api/comparison/export",
+            json={"cloud_id": "a", "format": "npy", "filename": "", "transform": {}},
+        )
+        self.assertEqual(default_name.status_code, 200)
+        self.assertIn("source.transformed.npy", default_name.headers["Content-Disposition"])
 
         unsafe = self.client.post(
             "/api/comparison/export",
