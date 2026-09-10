@@ -1479,12 +1479,12 @@ _COMPARISON_METRIC_NAMES = {
 }
 
 _COMPARISON_METRIC_REPORT_DETAILS = {
-    "accuracy": ("\u51c6\u786e\u7387\u8ddd\u79bb / Accuracy", "Acc.", "scene coordinate unit / \u573a\u666f\u5750\u6807\u5355\u4f4d", "Lower is better / \u8d8a\u4f4e\u8d8a\u597d", "mean d(P, G) / \u9884\u6d4b\u5230\u771f\u503c\u7684\u5e73\u5747\u6700\u8fd1\u90bb\u8ddd\u79bb"),
-    "completeness": ("\u5b8c\u6574\u7387\u8ddd\u79bb / Completeness", "Comp.", "scene coordinate unit / \u573a\u666f\u5750\u6807\u5355\u4f4d", "Lower is better / \u8d8a\u4f4e\u8d8a\u597d", "mean d(G, P) / \u771f\u503c\u5230\u9884\u6d4b\u7684\u5e73\u5747\u6700\u8fd1\u90bb\u8ddd\u79bb"),
-    "chamfer": ("\u5012\u89d2\u8ddd\u79bb / Chamfer Distance", "CD-L1", "scene coordinate unit / \u573a\u666f\u5750\u6807\u5355\u4f4d", "Lower is better / \u8d8a\u4f4e\u8d8a\u597d", "Accuracy + Completeness / \u4e24\u4e2a\u65b9\u5411\u8ddd\u79bb\u4e4b\u548c"),
-    "fscore": ("\uff26 \u5206\u6570 / F-Score", "F1", "dimensionless / \u65e0\u91cf\u7eb2", "Higher is better / \u8d8a\u9ad8\u8d8a\u597d", "harmonic mean of Precision and Recall at tau / tau \u9608\u503c\u4e0b\u7684\u8c03\u548c\u5e73\u5747"),
-    "auc": ("\u66f2\u7ebf\u4e0b\u9762\u79ef / Area Under Curve", "AUC", "dimensionless / \u65e0\u91cf\u7eb2", "Higher is better / \u8d8a\u9ad8\u8d8a\u597d", "normalized F-Score-threshold integral / \u5f52\u4e00\u5316 F-Score \u9608\u503c\u79ef\u5206"),
-    "normal_consistency": ("\u6cd5\u7ebf\u4e00\u81f4\u6027 / Normal Consistency", "NC", "dimensionless / \u65e0\u91cf\u7eb2", "Higher is better / \u8d8a\u9ad8\u8d8a\u597d", "mean absolute dot product of matched normals / \u5339\u914d\u70b9\u6cd5\u7ebf\u7edd\u5bf9\u5185\u79ef\u5747\u503c"),
+    "accuracy": ("\u51c6\u786e\u7387\u8ddd\u79bb / Accuracy", "Acc.", "scene coordinate unit / \u573a\u666f\u5750\u6807\u5355\u4f4d", "Lower is better / \u8d8a\u4f4e\u8d8a\u597d"),
+    "completeness": ("\u5b8c\u6574\u7387\u8ddd\u79bb / Completeness", "Comp.", "scene coordinate unit / \u573a\u666f\u5750\u6807\u5355\u4f4d", "Lower is better / \u8d8a\u4f4e\u8d8a\u597d"),
+    "chamfer": ("\u5012\u89d2\u8ddd\u79bb / Chamfer Distance", "CD-L1", "scene coordinate unit / \u573a\u666f\u5750\u6807\u5355\u4f4d", "Lower is better / \u8d8a\u4f4e\u8d8a\u597d"),
+    "fscore": ("\uff26 \u5206\u6570 / F-Score", "F1", "dimensionless / \u65e0\u91cf\u7eb2", "Higher is better / \u8d8a\u9ad8\u8d8a\u597d"),
+    "auc": ("\u66f2\u7ebf\u4e0b\u9762\u79ef / Area Under Curve", "AUC", "dimensionless / \u65e0\u91cf\u7eb2", "Higher is better / \u8d8a\u9ad8\u8d8a\u597d"),
+    "normal_consistency": ("\u6cd5\u7ebf\u4e00\u81f4\u6027 / Normal Consistency", "NC", "dimensionless / \u65e0\u91cf\u7eb2", "Higher is better / \u8d8a\u9ad8\u8d8a\u597d"),
 }
 
 
@@ -1563,9 +1563,8 @@ def _comparison_fscore(distances_p: np.ndarray, distances_g: np.ndarray, thresho
     score = 2.0 * precision * recall / denominator if denominator > 0 else 0.0
     return precision, recall, score
 def _comparison_markdown(filename_a: str, filename_b: str, points_a: np.ndarray, points_b: np.ndarray,
-                         transforms: Dict[str, Any], tau: float, tau_max: float, auc_samples: int,
-                         selected: List[str], values: Dict[str, Any], normal_note: Optional[str],
-                         runtime_seconds: float, query_engine: str) -> str:
+                         tau: float, tau_max: float, selected: List[str], values: Dict[str, Any],
+                         normal_note: Optional[str], runtime_seconds: float) -> str:
     def fmt(value: Any) -> str:
         if value is None:
             return "N/A"
@@ -1576,75 +1575,24 @@ def _comparison_markdown(filename_a: str, filename_b: str, points_a: np.ndarray,
     def cell(value: Any) -> str:
         return fmt(value).replace("\\", "\\\\").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
-    definitions = {
-        "accuracy": ("\u8861\u91cf\u9884\u6d4b\u70b9\u5230\u771f\u503c\u7684\u5e73\u5747\u6700\u8fd1\u90bb\u8ddd\u79bb", r"Accuracy=mean d(P,G)"),
-        "completeness": ("\u8861\u91cf\u771f\u503c\u70b9\u5230\u9884\u6d4b\u7684\u5e73\u5747\u6700\u8fd1\u90bb\u8ddd\u79bb", r"Completeness=mean d(G,P)"),
-        "chamfer": ("\u53cc\u5411\u6700\u8fd1\u90bb\u8ddd\u79bb\u4e4b\u548c", r"CD-L1=Accuracy+Completeness"),
-        "fscore": ("\u9608\u503c tau \u4e0b Precision \u4e0e Recall \u7684\u8c03\u548c\u5e73\u5747", r"F1=2*Precision*Recall/(Precision+Recall)"),
-        "auc": ("\u5728 0 \u5230 tau_max \u4e0a\u5bf9 F-Score \u66f2\u7ebf\u505a\u5f52\u4e00\u5316\u68af\u5f62\u79ef\u5206", r"AUC=integral(F(tau),0,tau_max)/tau_max"),
-        "normal_consistency": ("\u5339\u914d\u70b9\u6cd5\u7ebf\u7edd\u5bf9\u5185\u79ef\u7684\u5e73\u5747\u503c", r"NC=mean abs(nP dot nG*)"),
-    }
     lines = [
-        "# Point Cloud Evaluation Report / \u70b9\u4e91\u8bc4\u4f30\u5b9e\u9a8c\u62a5\u544a",
+        "# Comparison Metrics / \u5bf9\u6bd4\u6307\u6807",
         "",
-        "## 1. Experiment Overview / \u5b9e\u9a8c\u6982\u89c8",
+        f"Prediction / \u9884\u6d4b: **{cell(filename_a)}** ({len(points_a)} points)  ",
+        f"Ground truth / \u771f\u503c: **{cell(filename_b)}** ({len(points_b)} points)  ",
+        f"Thresholds: tau={cell(tau)}, tau_max={cell(tau_max)} | Runtime: {runtime_seconds:.3f} s",
         "",
-        "| Item / \u9879\u76ee | Value / \u5185\u5bb9 |",
-        "| --- | --- |",
-        f"| Prediction / \u9884\u6d4b\u70b9\u4e91 (Cloud A) | {cell(filename_a)} |",
-        f"| Ground Truth / \u771f\u503c\u70b9\u4e91 (Cloud B) | {cell(filename_b)} |",
-        f"| Prediction points / \u9884\u6d4b\u70b9\u6570 | {len(points_a)} |",
-        f"| Ground-truth points / \u771f\u503c\u70b9\u6570 | {len(points_b)} |",
-        "| Evaluation roles / \u8bc4\u4f30\u89d2\u8272 | Cloud A = Prediction / \u9884\u6d4b\uff1bCloud B = Ground Truth / \u771f\u503c |",
-        "| Generated at / \u751f\u6210\u65f6\u95f4 | " + cell(__import__("datetime").datetime.now().astimezone().isoformat(timespec="seconds")) + " |",
-        "",
-        "## 2. Evaluation Configuration / \u8bc4\u4f30\u914d\u7f6e",
-        "",
-        "| Parameter / \u53c2\u6570 | Value / \u503c |",
-        "| --- | --- |",
-        f"| Nearest-neighbour engine / \u6700\u8fd1\u90bb\u5f15\u64ce | {cell(query_engine)} |",
-        "| Distance metric / \u8ddd\u79bb\u5ea6\u91cf | Exact Euclidean distance / \u7cbe\u786e\u6b27\u6c0f\u8ddd\u79bb |",
-        f"| tau / \u9608\u503c | {cell(tau)} |",
-        f"| tau_max / \u6700\u5927\u9608\u503c | {cell(tau_max)} |",
-        f"| AUC samples / AUC \u91c7\u6837\u6570 | {auc_samples} equally spaced thresholds / \u7b49\u95f4\u9694\u9608\u503c |",
-        "| Normal estimation / \u6cd5\u7ebf\u4f30\u8ba1 | Same-cloud exact k-nearest-neighbour PCA, k=16 / \u540c\u4e91\u7cbe\u786e K \u8fd1\u90bb PCA\uff0ck=16 |",
-        f"| Runtime / \u8fd0\u884c\u8017\u65f6 | {runtime_seconds:.3f} s |",
-        "",
-        "## 3. Applied Transforms / \u5e94\u7528\u53d8\u6362",
-        "",
-        "| Cloud / \u70b9\u4e91 | tx | ty | tz | rx (deg) | ry (deg) | rz (deg) | scale / \u7f29\u653e |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Metric / \u6307\u6807 | Value / \u6570\u503c | Unit / \u5355\u4f4d | Better / \u65b9\u5411 |",
+        "| --- | ---: | --- | --- |",
     ]
-    for cloud_id in ("a", "b"):
-        transform = transforms.get(cloud_id) if isinstance(transforms, dict) else {}
-        transform = transform if isinstance(transform, dict) else {}
-        values_for_transform = [cell(transform.get(name, 0.0)) for name in ("tx", "ty", "tz", "rx", "ry", "rz")]
-        values_for_transform.append(cell(transform.get("scale", 1.0)))
-        lines.append("| Cloud {} | {} | {} | {} | {} | {} | {} | {} |".format(cloud_id.upper(), *values_for_transform))
-    lines.extend([
-        "",
-        "## 4. Results Summary / \u7ed3\u679c\u6c47\u603b",
-        "",
-        "| Metric / \u6307\u6807 | Symbol / \u7b26\u53f7 | Value / \u6570\u503c | Unit / \u5355\u4f4d | Better / \u4f18\u5316\u65b9\u5411 | Notes / \u5907\u6ce8 |",
-        "| --- | --- | ---: | --- | --- | --- |",
-    ])
     for metric in selected:
-        name, symbol, unit, direction, note = _COMPARISON_METRIC_REPORT_DETAILS[metric]
+        name, symbol, unit, direction = _COMPARISON_METRIC_REPORT_DETAILS[metric]
+        value = cell(values.get(metric))
         if metric == "fscore":
-            note += f"; Precision={fmt(values.get('precision'))}, Recall={fmt(values.get('recall'))}"
+            value += f" (P={fmt(values.get('precision'))}, R={fmt(values.get('recall'))})"
         if metric == "normal_consistency" and normal_note:
-            note += f"; {normal_note}"
-        lines.append(f"| {cell(name)} | {symbol} | {cell(values.get(metric))} | {cell(unit)} | {cell(direction)} | {cell(note)} |")
-    lines.extend([
-        "",
-        "## 5. Method Notes / \u65b9\u6cd5\u8bf4\u660e",
-        "",
-        "| Metric / \u6307\u6807 | Definition and implementation / \u5b9a\u4e49\u4e0e\u5b9e\u73b0 |",
-        "| --- | --- |",
-    ])
-    for metric in selected:
-        description, formula = definitions[metric]
-        lines.append(f"| {cell(_COMPARISON_METRIC_REPORT_DETAILS[metric][0])} | {cell(description + '; ' + formula)} |")
+            value += f" ({cell(normal_note)})"
+        lines.append(f"| {cell(name)} ({symbol}) | **{value}** | {cell(unit)} | {cell(direction)} |")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -1728,8 +1676,8 @@ def api_comparison_evaluate():
                 dots = np.abs(np.sum(normals_p * normals_g[nearest_gt], axis=1))
                 values["normal_consistency"] = float(np.mean(np.clip(dots, 0.0, 1.0)))
         runtime_seconds = time.perf_counter() - started
-        markdown = _comparison_markdown(filename_a, filename_b, points_a, points_b, transforms, tau, tau_max,
-                                        auc_samples, selected, values, normal_note, runtime_seconds, query_engine)
+        markdown = _comparison_markdown(filename_a, filename_b, points_a, points_b, tau, tau_max,
+                                        selected, values, normal_note, runtime_seconds)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S_%f")

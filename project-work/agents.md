@@ -143,18 +143,21 @@ expansion is supported only when the resulting canonical path remains in an allo
   downloads a transformed `.pt` through `/api/export_current/download`; `Export Frames` downloads
   a ZIP of `frame_0000.pt`, `frame_0001.pt`, and so on through `/api/export/download`.
 - These browser-download routes accept the same `scale` and `color_mode` values as the path-based
-  routes. The older `/api/export_current` and `/api/export` endpoints remain available for API
-  clients that explicitly need server-side output paths.
-- Comparison export accepts optional JSON `filename`. `_clean_download_filename` rejects path
-  separators/control characters and ensures the selected `.ply`, `.pt`, or `.npy` extension is
-  applied exactly once. Blank names retain the source-based `*.transformed.<ext>` default.
-- The comparison filename field is inserted by `ensureComparisonFilenameControl()` so the compact
-  active page keeps one responsive layout for all export formats. Browser download handling reads
-  `Content-Disposition`, falls back to a deterministic name, revokes Blob URLs after click, and
-  restores button state after errors.
+  routes, plus optional JSON `filename`. The editor's current-frame and all-frames dialogs pass their
+  optional name fields to their respective download routes. The older `/api/export_current` and
+  `/api/export` endpoints remain available for API clients that explicitly need server-side output paths.
+- `_clean_download_filename` rejects path separators/control characters and ensures the selected `.ply`,
+  `.pt`, `.npy`, or `.zip` extension is applied exactly once. Blank names retain source-based defaults:
+  `*.frame_XXXX.pt`, `*.frames.zip`, or `*.transformed.<ext>` for Comparison exports.
+- `ensureComparisonFilenameControl()` retains the compact Comparison layout; the editor dialog fields are
+  explicit markup. Browser download handling reads `Content-Disposition`, falls back to a deterministic
+  name, revokes Blob URLs after click, and restores button state after errors.
 - Browser smoke on 2026-09-09 used the local `frame_0000.pt` and `frame_0001.pt` fixtures: the
   editor downloaded the current frame and ZIP, Comparison reached `Ready` with 6/4 points, and
   `aligned_result` produced `aligned_result.ply` with no console warnings or errors.
+- Browser smoke on 2026-09-10 confirmed the optional filename fields appear in both editor download dialogs
+  without layout overflow. Backend regression verifies a requested `.zip` current-frame name becomes `.pt`, a
+  requested `.pt` archive name becomes `.zip`, and both editor download routes reject filename paths.
 
 New workspaces default to one timeline frame. `POST /api/export` treats a one-frame request's `output_dir`
 value as a file path (adding `.pt` when needed), so `~/Desktop/new` writes `~/Desktop/new.pt`; multi-frame
@@ -399,9 +402,11 @@ static points from SH DC. Verify this work using Flask's test client and in-memo
   and Cloud B as ground truth.
 - Normal Consistency queries exact same-cloud neighbours (k=16) and computes batched PCA normals; insufficient
   or degenerate local geometry remains N/A.
-- The response keeps existing fields and adds runtime_seconds plus query_engine. Generated reports are bilingual
-  Chinese/English Markdown with experiment overview, configuration, transforms, results, and method tables.
-  Dynamic table values escape pipes, backslashes, and line breaks.
+- The response keeps existing fields and adds runtime_seconds plus query_engine. Generated reports are compact,
+  bilingual Chinese/English Markdown: prediction/ground-truth filenames and point counts, thresholds/runtime,
+  then the selected-metrics table. F-Score includes Precision/Recall in its value cell; an unavailable Normal
+  Consistency includes its explanation only in that metric row. Dynamic report values escape pipes, backslashes,
+  and line breaks.
 - Run the focused regression with py -3.13 -m unittest discover -s tests -p "test_*.py"; run
   py -3.13 -m py_compile app.py, frontend syntax checks, and git diff --check before marking changes complete.
 

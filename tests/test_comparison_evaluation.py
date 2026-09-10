@@ -84,7 +84,7 @@ class ComparisonEvaluationTests(unittest.TestCase):
         self.assertEqual(set(result["values"]), {"completeness"})
         self.assertAlmostEqual(result["values"]["completeness"], 0.1)
 
-    def test_all_metrics_emit_bilingual_table_report_and_download(self):
+    def test_all_metrics_emit_compact_metrics_first_report_and_download(self):
         points = np.asarray([[x, y, 0.0] for x in range(5) for y in range(5)], dtype=np.float64)
         self.load_comparison(points, points, "prediction|v1\nfinal.ply", "ground_truth.ply")
         result = self.evaluate([
@@ -97,15 +97,16 @@ class ComparisonEvaluationTests(unittest.TestCase):
         self.assertAlmostEqual(result["values"]["fscore"], 1.0)
         self.assertAlmostEqual(result["values"]["normal_consistency"], 1.0)
         markdown = result["markdown"]
-        self.assertIn("# Point Cloud Evaluation Report / ", markdown)
-        self.assertIn("## 2. Evaluation Configuration / ", markdown)
-        self.assertIn("## 3. Applied Transforms / ", markdown)
-        self.assertIn("## 4. Results Summary / ", markdown)
-        self.assertIn("## 5. Method Notes / ", markdown)
+        self.assertIn("# Comparison Metrics / ", markdown)
         self.assertIn("| Metric / ", markdown)
+        self.assertIn("Accuracy (Acc.)", markdown)
+        self.assertIn("F-Score (F1)", markdown)
+        self.assertIn("P=1.00000000, R=1.00000000", markdown)
         self.assertIn("prediction\\|v1 final.ply", markdown)
-        self.assertIn("SciPy cKDTree (exact Euclidean)", markdown)
-        self.assertIn("\u70b9\u4e91\u8bc4\u4f30\u5b9e\u9a8c\u62a5\u544a", markdown)
+        self.assertIn("\u5bf9\u6bd4\u6307\u6807", markdown)
+        self.assertNotIn("Evaluation Configuration", markdown)
+        self.assertNotIn("Applied Transforms", markdown)
+        self.assertNotIn("Method Notes", markdown)
 
         download = self.client.get(result["download_url"])
         self.assertEqual(download.status_code, 200)

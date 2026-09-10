@@ -1,5 +1,44 @@
 # Part-Level 4DGS Animation Editor Plan
 
+## Current Request: Named Browser Exports (2026-09-10)
+
+- [x] Add optional filename inputs to the current-frame and all-frames browser export dialogs.
+- [x] Send the requested names to the existing download endpoints while retaining source-based defaults for blank names.
+- [x] Cover extension normalization and unsafe-name rejection, then run backend/frontend validation and a focused review.
+
+2026-09-10 verification completed:
+
+- The active editor shows an optional filename field in both `Export Current Frame` and `Export Frames` dialogs.
+  The fields pass their values to `/api/export_current/download` and `/api/export/download`; blank values retain
+  source-derived names.
+- `D:\Develop\Python\CPython\Python313\python.exe -m py_compile app.py tests\test_comparison_evaluation.py
+  tests\test_export_downloads.py tests\test_security_hardening.py` passed. The full test suite passed 20 tests,
+  including custom current-frame naming, `.pt`/`.zip` extension normalization, and unsafe filename rejection.
+- Node parsed the active inline editor script. The local Flask server returned HTTP 200 for `/`; a browser smoke
+  confirmed both dialogs render the named input without layout overflow. `git diff --check` passed.
+- Focused review confirmed that filename handling remains server-authoritative, extension-specific, and isolated
+  from server-side export paths. Existing blank-name behavior and download button recovery remain unchanged.
+
+
+## Current Request: Metrics-First Comparison Evaluation Report (2026-09-10)
+
+- [x] Reduce the generated Comparison Markdown report to essential dataset context and a metrics-first results table.
+- [x] Preserve metric values, precision/recall support, threshold context, download behavior, and API response compatibility.
+- [x] Update evaluation-report regression coverage and project notes.
+- [x] Run syntax, focused regression, diff validation, and a focused code review before completing this checklist.
+
+2026-09-10 verification completed:
+
+- The downloaded `comparison_evaluation_*.md` now contains a compact bilingual title, three lines of input and
+  threshold/runtime context, then a four-column selected-metrics table. The former configuration, transforms,
+  method-definition, and broad notes sections are intentionally absent.
+- `D:\Develop\Python\CPython\Python313\python.exe -m py_compile app.py tests\test_comparison_evaluation.py`
+  passed. `D:\Develop\Python\CPython\Python313\python.exe -m unittest discover -s tests -p "test_*.py" -v`
+  passed all 18 tests. `git diff --check` passed.
+- Focused review confirmed metric calculations and API response fields remain unchanged; filenames are still
+  Markdown-escaped, F-Score keeps Precision/Recall, Normal Consistency failures remain local to that metric row,
+  and the persisted/downloaded Markdown is the same string returned to the browser.
+
 ## Current Request: First Batch - Security Boundary And Trusted Input Hardening (2026-09-10)
 
 - [x] Create a recoverable Git checkpoint before security work, preserving prior working-document changes (`059c7fc`).

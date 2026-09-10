@@ -47,10 +47,18 @@ class ExportDownloadTests(unittest.TestCase):
         self.assertIn("scene.frame_0000.pt", response.headers["Content-Disposition"])
         self.assertGreater(len(response.data), 32)
 
+    def test_current_frame_download_uses_custom_name_and_normalizes_extension(self):
+        response = self.client.post(
+            "/api/export_current/download",
+            json={"filename": "animated_scene.zip"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("animated_scene.pt", response.headers["Content-Disposition"])
+
     def test_all_frames_download_returns_zip_without_server_path(self):
         response = self.client.post(
             "/api/export/download",
-            json={"filename": "scene_bundle.zip", "color_mode": "edited"},
+            json={"filename": "scene_bundle.pt", "color_mode": "edited"},
         )
         self.assertEqual(response.status_code, 200)
         self.assertIn("scene_bundle.zip", response.headers["Content-Disposition"])
@@ -62,6 +70,12 @@ class ExportDownloadTests(unittest.TestCase):
         response = self.client.post("/api/export_current/download", json={})
         self.assertEqual(response.status_code, 200)
         self.assertIn("frame_0000.pt", response.headers["Content-Disposition"])
+
+    def test_editor_download_rejects_filename_paths(self):
+        for endpoint in ("/api/export_current/download", "/api/export/download"):
+            with self.subTest(endpoint=endpoint):
+                response = self.client.post(endpoint, json={"filename": "../escape.pt"})
+                self.assertEqual(response.status_code, 400)
 
     def test_comparison_export_accepts_custom_name_and_rejects_paths(self):
         editor_app.COMPARISON_STATE["clouds"] = {

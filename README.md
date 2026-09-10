@@ -63,7 +63,7 @@ exports do not accept a server filesystem path.
 3. Switch from **Orbit** to **Select**, drag a rectangle around static vertices, and choose **Create Part**.
 4. Select a Part to edit its name, color, pivot, translation, rotation, point size, or global editor scale.
 5. Set keyframes on the timeline, choose the total frame count and interpolation method, then scrub or play the result.
-6. Use **Export Current** for one transformed Gaussian frame or **Export All** for a ZIP containing every timeline frame.
+6. Use **Export Current** for one transformed Gaussian frame or **Export All** for a ZIP containing every timeline frame. Each dialog can optionally set the downloaded file name.
 
 Removing a static Part with **Remove Part** only unassigns its vertices. **Delete Part + Points** permanently removes that static Part and its vertices; this action cannot be undone. Vertex deletion is not available for a 4DGS Part.
 
@@ -72,7 +72,7 @@ Removing a static Part with **Remove Part** only unassigns its vertices. **Delet
 1. Open **Comparison** and choose exactly two files. Cloud A is always treated as the Prediction and Cloud B as the Ground Truth.
 2. Load the pair, then choose **A only**, **B only**, **Both**, or **Dual view**. Dual view can link camera position, orientation, zoom, and orbit target.
 3. Select Cloud A or Cloud B, adjust scale, rotation, and translation, or use **Center align** to match the current centroids.
-4. Select metrics and thresholds (<code>tau</code> and <code>tau_max</code>), then choose **Evaluate**. The generated bilingual Markdown report is downloaded by the browser and stored under <code>generated/evaluations/</code>.
+4. Select metrics and thresholds (<code>tau</code> and <code>tau_max</code>), then choose **Evaluate**. The browser downloads a compact bilingual Markdown metrics report and the server stores it under <code>generated/evaluations/</code>.
 5. Choose an export format and use **Export selected** to download the transformed cloud. An optional filename is sanitized and receives the selected extension.
 
 ### Comparison evaluation
@@ -94,9 +94,9 @@ Nearest-neighbour and normal-estimation queries use exact Euclidean <code>scipy.
 
 #### Editor exports
 
-- **Current frame:** <code>POST /api/export_current/download</code> returns a browser attachment named from the source file and frame number.
-- **All frames:** <code>POST /api/export/download</code> returns a ZIP containing <code>frame_0000.pt</code>, <code>frame_0001.pt</code>, and so on.
-- Both browser-download routes accept <code>color_mode: "original"</code> or <code>"edited"</code> and the positive global editor <code>scale</code>.
+- **Current frame:** <code>POST /api/export_current/download</code> returns a browser attachment named from the source file and frame number, or an optional user-provided name.
+- **All frames:** <code>POST /api/export/download</code> returns a ZIP containing <code>frame_0000.pt</code>, <code>frame_0001.pt</code>, and so on, with an optional user-provided archive name.
+- Both browser-download routes accept <code>color_mode: "original"</code> or <code>"edited"</code>, the positive global editor <code>scale</code>, and optional <code>filename</code>. Blank names use the source-based default; path separators and control characters are rejected, and the endpoint applies the required <code>.pt</code> or <code>.zip</code> extension.
 - Gaussian <code>.pt</code> exports preserve positions, quaternions, scales, opacities, SH DC/rest coefficients, SH degree, and selected RGB data when those attributes exist.
 - The original-color mode prefers source RGB, then SH-derived color, then a neutral fallback. Edited mode uses the selected Part color for assigned static vertices and keeps the source fallback for unassigned points.
 
@@ -290,7 +290,7 @@ Part-Level 4DGS Editor 是一个基于浏览器的点云与 4D Gaussian Splattin
 3. 切换到 **Select**，框选静态点并点击 **Create Part**。
 4. 选中 Part 后编辑名称、颜色、枢轴、平移、旋转、点大小和全局缩放。
 5. 在时间轴上设置关键帧，调整总帧数和插值方式，然后拖动或播放预览。
-6. 使用 **Export Current** 下载当前高斯帧，或使用 **Export All** 下载包含全部帧的 ZIP。
+6. 使用 **Export Current** 下载当前高斯帧，或使用 **Export All** 下载包含全部帧的 ZIP；两个对话框均可选填下载文件名。
 
 **Remove Part** 只会取消静态点的 Part 归属，点仍保留在工作区；**Delete Part + Points** 会永久删除该静态 Part 及其顶点，且无法撤销。4DGS Part 不支持顶点删除。
 
