@@ -747,3 +747,26 @@ py -3.13 -m py_compile app.py
 - `py -3.13 -m py_compile app.py`
 - `py -3.13 -m unittest discover -s tests -p "test_*.py"` (6 tests passed)
 - `git diff --check`
+
+## Usability And Risk Audit (2026-09-10)
+
+- [x] Review the active Flask/Three.js editor for high-impact usability, state-management, data-semantic,
+  performance, and deployment risks without changing business behavior.
+- [x] Check the local empty-workspace UI and focused malformed-JSON API behavior; retain confirmed evidence
+  separately from static-review findings.
+- [x] Write the prioritized Chinese audit to `generated/usability-audit-2026-09-10.md`.
+- [x] Record next implementation order: correctness races and frame order; RGB/SH semantics and display mode;
+  frontend state/error recovery; project persistence; then large-job and multi-user architecture.
+
+## Current Request: Resolve Usability And Reliability Audit Findings (2026-09-10)
+
+- [ ] Create a Git checkpoint containing the audit and this implementation plan before business-code changes.
+- [ ] Fix P1 data correctness: RGB/SH separation, natural 4DGS frame ordering, Pivot save ownership, and stale
+  frame-load protection.
+- [ ] Correct timeline geometry and consolidate the duplicate export event handlers.
+- [ ] Make editor color intent explicit, add a resilient empty-state/action model, and harden Part-name rendering.
+- [ ] Make Comparison loading atomic, add A/B role swapping, and preserve browser-local edit state across refresh.
+- [ ] Add practical import/export resource limits and cleanup for generated evaluation reports without changing the
+  documented local-only security boundary.
+- [ ] Add focused parser/API regressions and frontend syntax/browser smoke checks; run code review, compilation,
+  full tests, and `git diff --check` before marking the work complete.

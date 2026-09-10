@@ -421,3 +421,16 @@ static points from SH DC. Verify this work using Flask's test client and in-memo
   static page, while `app.py` remains the legacy embedded fallback.
 - Browser verification fixture: `generated/frame_0000.pt` (6 points) and `generated/frame_0001.pt`
   (4 points). Invalid `README.md` confirms failure recovery.
+
+## Usability And Risk Audit (2026-09-10)
+
+- The detailed, non-mutating audit is `generated/usability-audit-2026-09-10.md`. Treat its P1 items as
+  correctness work before feature expansion: capture the Part ID for delayed Pivot saves, reject stale frame
+  responses, use natural numeric 4DGS frame ordering, and align the timeline playhead with `.track-line`.
+- Do not conflate explicit RGB with Gaussian SH DC: raw NPY/PT columns 3..5 are RGB. The current
+  `_normalise_frame()` includes RGB aliases in its `sh0` fallback and needs a semantic correction plus tests.
+- The UI still has duplicate export binding layers: the last `wireBrowserExportEvents()` assignment wins, while
+  older handlers reference absent `currentPath`/`allPath`. Consolidate this before changing export behavior.
+- The Flask globals intentionally implement one in-memory local workspace. Browser refresh loses frontend-only
+  scale/Comparison transforms and server restart loses the workspace; add project persistence/undo before
+  treating the editor as suitable for long-running production editing sessions.
