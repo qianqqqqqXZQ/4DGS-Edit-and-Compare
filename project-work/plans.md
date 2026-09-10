@@ -1,4 +1,49 @@
-# Part-Level 4DGS Animation Editor Plan
+# 4DGS-Edit-and-Compare Plan
+
+## Current Request: Resolve Usability Audit Findings (2026-09-10)
+
+- [x] Eliminate Pivot and frame-response races; align each time-track playhead with its keyframes; use natural numeric 4DGS frame order.
+- [x] Separate original RGB from SH DC data; add original/Part viewport colors and preserve both modes through exports.
+- [x] Harden empty states, unsafe Part-name rendering, JSON input, quaternion validation, browser export memory behavior, report retention, Comparison failure recovery, A/B swap, and local-directory import.
+- [x] Add a one-step in-session undo for destructive static-Part deletion and a same-browser second-tab read-only lease.
+- [x] Add self-contained project download/load with static data, 4DGS frames, Parts, keyframes, timeline, Comparison clouds, and browser display/transform choices.
+- [x] Cover the behavior with backend regressions, then run frontend syntax, complete tests, and a focused implementation review.
+
+2026-09-10 verification completed:
+
+- `tests/test_usability_hardening.py` now covers RGB/SH separation, natural frame ordering, Part names,
+  point-color modes, deletion undo, Comparison swap, object-only JSON endpoints, and full project archive
+  round-trip including Comparison and saved display choices.
+- The project archive stores only JSON and `numpy.savez_compressed` arrays loaded with `allow_pickle=False`;
+  it validates member count, compressed/expanded size, canonical frame attributes, Parts, keyframes, and
+  Comparison pairing before atomically replacing in-memory state.
+- The browser remains intentionally local/single-workspace. The tab lease reduces accidental same-browser
+  overwrites; it is not authentication or server-side multi-user isolation.
+- `D:\Develop\Python\CPython\Python313\python.exe -m py_compile app.py tests\test_usability_hardening.py`,
+  `D:\Develop\Python\CPython\Python313\python.exe -W error::ResourceWarning -m unittest discover -s tests
+  -p "test_*.py" -v`, the active inline-script Node parse, and `git diff --check` all passed. The complete
+  suite ran 28 tests. A local browser smoke on port 5013 confirmed the new project controls and correct
+  empty-workspace disabled states.
+
+## Current Request: Correct Repository Naming (2026-09-10)
+
+- [x] Locate user-visible and documentation uses of the former Part-Level 4DGS Editor name.
+- [x] Replace the repository, README, active UI, legacy fallback title, Docker-image examples, and project-note names with `4DGS-Edit-and-Compare`.
+- [x] Preserve the `part-level-4dgs-project` archive format identifier for existing project-file compatibility.
+- [x] Run focused text, syntax, test, diff, and review checks before closing the request.
+
+2026-09-10 verification completed:
+
+- Repository-facing documentation, the active editor title and visible brand, the legacy HTML fallback title,
+  Docker image examples, local browser-state keys, and project notes now use `4DGS-Edit-and-Compare`.
+- `D:\Develop\Python\CPython\Python313\python.exe -m py_compile app.py tests\test_comparison_evaluation.py
+  tests\test_export_downloads.py tests\test_security_hardening.py tests\test_usability_hardening.py` passed, and
+  `D:\Develop\Python\CPython\Python313\python.exe -m unittest discover -s tests -p "test_*.py" -v` passed all 27 tests.
+- Node successfully parsed the active inline editor script. A Flask test-client smoke test confirmed `/` returns
+  HTTP 200 with the new page title and visible brand. `git diff --check` passed.
+- Focused review found no presentation, Docker-example, or local-storage namespace mismatch. The only retained
+  former-name identifier is `PROJECT_FORMAT = "part-level-4dgs-project"`, intentionally preserved to keep project
+  archives created by the in-progress persistence feature compatible.
 
 ## Current Request: Named Browser Exports (2026-09-10)
 

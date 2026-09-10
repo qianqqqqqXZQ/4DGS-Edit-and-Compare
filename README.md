@@ -1,4 +1,4 @@
-# Part-Level 4DGS Editor
+# 4DGS-Edit-and-Compare
 
 [English](#english) | [中文](#chinese)
 
@@ -6,7 +6,7 @@
 
 ## English
 
-Part-Level 4DGS Editor is a browser-based workspace for inspecting, editing, aligning, and evaluating point clouds and 4D Gaussian Splatting (4DGS) data. A Flask backend manages parsing, state, transforms, evaluation, and export; a local Three.js/WebGL frontend provides the interactive viewport.
+4DGS-Edit-and-Compare is a browser-based workspace for inspecting, editing, aligning, and evaluating point clouds and 4D Gaussian Splatting (4DGS) data. A Flask backend manages parsing, state, transforms, evaluation, and export; a local Three.js/WebGL frontend provides the interactive viewport.
 
 The application is intended for reconstruction and LiDAR-alignment workflows where individual scene components need to be selected, repositioned, animated, compared with a reference cloud, and exported in a reusable format.
 
@@ -61,16 +61,17 @@ exports do not accept a server filesystem path.
 1. Start the server and open the editor in a WebGL-capable browser.
 2. Select **Upload** to replace the static workspace, or **Add Files** to append point clouds. Each uploaded file becomes an editable Part.
 3. Switch from **Orbit** to **Select**, drag a rectangle around static vertices, and choose **Create Part**.
-4. Select a Part to edit its name, color, pivot, translation, rotation, point size, or global editor scale.
+4. Select a Part to edit its name, color, pivot, translation, rotation, point size, or global editor scale. Use **Original** / **Part colors** to choose source RGB/SH color or Part color coding in the viewport.
 5. Set keyframes on the timeline, choose the total frame count and interpolation method, then scrub or play the result.
-6. Use **Export Current** for one transformed Gaussian frame or **Export All** for a ZIP containing every timeline frame. Each dialog can optionally set the downloaded file name.
+6. Use **Save Project** to download a self-contained workspace ZIP before a long edit or server restart. **Load Project** restores static data, 4DGS frames, Parts, keyframes, timeline settings, Comparison files, and saved display choices.
+7. Use **Export Current** for one transformed Gaussian frame or **Export All** for a ZIP containing every timeline frame. Each dialog can optionally set the downloaded file name.
 
-Removing a static Part with **Remove Part** only unassigns its vertices. **Delete Part + Points** permanently removes that static Part and its vertices; this action cannot be undone. Vertex deletion is not available for a 4DGS Part.
+Removing a static Part with **Remove Part** only unassigns its vertices. **Delete Part + Points** permanently removes that static Part and its vertices; **Undo last point deletion** can restore one such deletion during the current server session. Vertex deletion is not available for a 4DGS Part.
 
 #### Compare two clouds
 
 1. Open **Comparison** and choose exactly two files. Cloud A is always treated as the Prediction and Cloud B as the Ground Truth.
-2. Load the pair, then choose **A only**, **B only**, **Both**, or **Dual view**. Dual view can link camera position, orientation, zoom, and orbit target.
+2. Load the pair, then choose **A only**, **B only**, **Both**, or **Dual view**. Use **Swap A / B** if Prediction and Ground Truth were selected in the wrong order. Dual view can link camera position, orientation, zoom, and orbit target.
 3. Select Cloud A or Cloud B, adjust scale, rotation, and translation, or use **Center align** to match the current centroids.
 4. Select metrics and thresholds (<code>tau</code> and <code>tau_max</code>), then choose **Evaluate**. The browser downloads a compact bilingual Markdown metrics report and the server stores it under <code>generated/evaluations/</code>.
 5. Choose an export format and use **Export selected** to download the transformed cloud. An optional filename is sanitized and receives the selected extension.
@@ -124,11 +125,12 @@ The browser uses JSON and compact binary endpoints. Binary responses use little-
 | UI and state | <code>GET /</code>, <code>GET /api/state</code> | Serve the active editor and return workspace metadata. |
 | Frames | <code>GET /api/pointcloud</code>, <code>GET /api/frame/&lt;frame&gt;</code>, <code>GET /api/frame_transforms/&lt;frame&gt;</code> | Read source geometry, frame geometry, and keyframed transforms. |
 | Upload | <code>POST /api/upload</code>, <code>POST /api/upload_append</code> | Upload one or more static <code>.ply</code>/<code>.pt</code>/<code>.npy</code> files as multipart form data (<code>file</code>). |
-| 4DGS | <code>POST /api/upload_4dgs</code> | Load a server-readable frame directory from JSON <code>{ "dir_path": "...", "loop": true/false }</code>. |
+| 4DGS | <code>POST /api/upload_4dgs</code>, <code>POST /api/import-4dgs</code> | Load a naturally sorted server-readable frame directory, or choose a local browser folder for <code>.pt</code>/<code>.npy</code> frames. |
 | Parts | <code>GET/POST /api/parts</code>, <code>PUT/DELETE /api/parts/&lt;pid&gt;</code>, <code>POST /api/parts/&lt;pid&gt;/assign</code>, <code>DELETE /api/parts/&lt;pid&gt;/vertices</code>, <code>GET /api/parts/&lt;pid&gt;/centroid</code> | Create, edit, assign, remove, or inspect Parts. |
 | Keyframes | <code>GET/POST /api/keyframes/&lt;pid&gt;</code>, <code>DELETE /api/keyframes/&lt;pid&gt;/&lt;frame&gt;</code> | Manage per-Part keyframes. |
 | Settings | <code>GET/PUT /api/settings</code> | Set timeline frame count and interpolation method. |
-| Comparison | <code>POST/DELETE /api/comparison</code>, <code>GET /api/comparison/a</code>, <code>GET /api/comparison/b</code> | Create/clear the isolated comparison session and read each cloud. The upload requires exactly two files under <code>files</code>. |
+| Comparison | <code>GET/POST/DELETE /api/comparison</code>, <code>POST /api/comparison/swap</code>, <code>GET /api/comparison/a</code>, <code>GET /api/comparison/b</code> | Create/clear the isolated comparison session, read each cloud, inspect metadata, and swap A/B roles. The upload requires exactly two files under <code>files</code>. |
+| Projects | <code>POST /api/project/download</code>, <code>POST /api/project</code>, <code>POST /api/undo</code> | Download/load a self-contained workspace ZIP and undo one destructive static-Part deletion in the active server session. |
 | Comparison tools | <code>POST /api/comparison/evaluate</code>, <code>POST /api/comparison/export</code>, <code>GET /api/comparison/evaluations/&lt;filename&gt;</code> | Evaluate selected metrics, export a transformed cloud, and download a generated report. |
 | Downloads | <code>POST /api/export_current/download</code>, <code>POST /api/export/download</code> | Return browser-friendly current-frame and all-frame downloads without a server path. |
 
@@ -197,6 +199,10 @@ environment variables are available to controlled deployments:
 | <code>EDITOR_HOST</code> | <code>127.0.0.1</code> | Bind address. Setting <code>0.0.0.0</code> deliberately exposes the service to reachable networks; supply authentication and network isolation yourself. |
 | <code>EDITOR_PORT</code> | <code>5011</code> | TCP port, validated as an integer in <code>1..65535</code>. |
 | <code>EDITOR_ALLOWED_PATHS</code> | repository root | Server-side path roots, separated using the platform path separator (<code>;</code> on Windows, <code>:</code> on macOS/Linux). Used by 4DGS directory import and legacy path-based exports. |
+| <code>EDITOR_MAX_POINTS</code> | <code>5000000</code> | Maximum number of points accepted in one point-cloud frame. |
+| <code>EDITOR_BROWSER_EXPORT_MAX_FRAMES</code> | <code>1000</code> | Maximum number of frames allowed in browser ZIP export. |
+| <code>EDITOR_EVALUATION_REPORT_RETENTION</code> | <code>100</code> | Number of generated evaluation reports retained on disk. |
+| <code>EDITOR_PROJECT_ARCHIVE_MAX_BYTES</code> | <code>419430400</code> | Maximum compressed and expanded project-archive size accepted on import. |
 
 For example, a Docker container that imports a mounted frame directory can retain local-only binding and
 allow only that directory plus the application root:
@@ -206,14 +212,14 @@ docker run --rm -p 127.0.0.1:5011:5011 \
   -e EDITOR_HOST=0.0.0.0 \
   -e EDITOR_ALLOWED_PATHS=/app:/data/frames \
   -v /absolute/path/to/frames:/data/frames:ro \
-  part-level-4dgs-editor
+  4dgs-edit-and-compare
 ~~~
 
 #### Docker
 
 ~~~bash
-docker build -t part-level-4dgs-editor .
-docker run --rm -p 127.0.0.1:5011:5011 -e EDITOR_HOST=0.0.0.0 part-level-4dgs-editor
+docker build -t 4dgs-edit-and-compare .
+docker run --rm -p 127.0.0.1:5011:5011 -e EDITOR_HOST=0.0.0.0 4dgs-edit-and-compare
 ~~~
 
 To import a 4DGS directory in Docker, mount the host directory and enter the container path in the **4DGS Dir** dialog:
@@ -223,7 +229,7 @@ docker run --rm -p 127.0.0.1:5011:5011 \
   -e EDITOR_HOST=0.0.0.0 \
   -e EDITOR_ALLOWED_PATHS=/app:/data/frames \
   -v /absolute/path/to/frames:/data/frames:ro \
-  part-level-4dgs-editor
+  4dgs-edit-and-compare
 ~~~
 
 ### Development and verification
@@ -257,7 +263,7 @@ dict 组成的 raw Tensor、gsplat 字典、嵌套 `splats` 或非空 `frames` �
 根目录及其子目录；多个根目录按操作系统路径分隔符配置（Windows `;`，macOS/Linux `:`）。
 检查会拒绝 `..`、白名单外路径和符号链接逃逸。浏览器下载接口不接收服务器路径。
 
-Part-Level 4DGS Editor 是一个基于浏览器的点云与 4D Gaussian Splatting（4DGS）编辑、对齐和评估工具。Flask 后端负责文件解析、状态管理、变换、评估和导出；本地 Three.js/WebGL 前端提供交互式三维视口。
+4DGS-Edit-and-Compare 是一个基于浏览器的点云与 4D Gaussian Splatting（4DGS）编辑、对齐和评估工具。Flask 后端负责文件解析、状态管理、变换、评估和导出；本地 Three.js/WebGL 前端提供交互式三维视口。
 
 项目面向三维重建和 LiDAR 对齐场景：可以把静态点划分为独立 Part，调整位姿并制作关键帧动画，再与参考点云进行 A/B 对比、指标评估和结果导出。
 
@@ -267,9 +273,9 @@ Part-Level 4DGS Editor 是一个基于浏览器的点云与 4D Gaussian Splattin
 
 - 支持上传一个或多个 <code>.ply</code>、<code>.pt</code>、<code>.npy</code> 点云，并向现有静态工作区追加文件。
 - 支持框选静态顶点、创建/重命名/改色/删除 Part、重新分配顶点、设置枢轴点或质心，以及平移和 ZYX 旋转。
-- 支持从服务端目录导入按文件名排序的 <code>.pt</code>/<code>.npy</code> 4DGS 帧序列，并选择循环播放。
+- 支持从服务端目录或浏览器本地文件夹导入自然数字排序的 <code>.pt</code>/<code>.npy</code> 4DGS 帧序列，并选择循环播放。
 - 支持 Part 关键帧、时间轴拖动/播放，以及 Linear 和 Catmull-Rom 插值；新工作区默认只有 1 帧。
-- 支持独立的 Comparison 工作区：Cloud A 为 Prediction，Cloud B 为 Ground Truth，可使用 A only、B only、Both 或 Dual view，并可联动相机。
+- 支持独立的 Comparison 工作区：Cloud A 为 Prediction，Cloud B 为 Ground Truth，可使用 Swap A / B、A only、B only、Both 或 Dual view，并可联动相机。
 - 支持对任意比较云进行以质心为中心的缩放、ZYX 旋转、平移和 Center align 对齐。
 - 支持 Accuracy、Completeness、Chamfer Distance、F-Score、AUC 和可选 Normal Consistency 评估，使用精确的 SciPy <code>cKDTree</code> 查询。
 - 支持浏览器下载当前 <code>.pt</code>、全部帧 ZIP，以及比较云的 <code>.ply</code>、<code>.pt</code>、<code>.npy</code> 导出。
@@ -288,11 +294,12 @@ Part-Level 4DGS Editor 是一个基于浏览器的点云与 4D Gaussian Splattin
 1. 启动服务并在支持 WebGL 的浏览器中打开页面。
 2. 使用 **Upload** 替换静态工作区，或使用 **Add Files** 追加点云。
 3. 切换到 **Select**，框选静态点并点击 **Create Part**。
-4. 选中 Part 后编辑名称、颜色、枢轴、平移、旋转、点大小和全局缩放。
+4. 选中 Part 后编辑名称、颜色、枢轴、平移、旋转、点大小和全局缩放；可用 **Original** / **Part colors** 切换原始 RGB/SH 色与 Part 分类色。
 5. 在时间轴上设置关键帧，调整总帧数和插值方式，然后拖动或播放预览。
-6. 使用 **Export Current** 下载当前高斯帧，或使用 **Export All** 下载包含全部帧的 ZIP；两个对话框均可选填下载文件名。
+6. 长时间编辑前使用 **Save Project** 下载完整项目 ZIP；**Load Project** 可在服务重启后恢复点数据、4DGS 帧、Part、关键帧、Comparison 和显示设置。
+7. 使用 **Export Current** 下载当前高斯帧，或使用 **Export All** 下载包含全部帧的 ZIP；两个对话框均可选填下载文件名。
 
-**Remove Part** 只会取消静态点的 Part 归属，点仍保留在工作区；**Delete Part + Points** 会永久删除该静态 Part 及其顶点，且无法撤销。4DGS Part 不支持顶点删除。
+**Remove Part** 只会取消静态点的 Part 归属，点仍保留在工作区；**Delete Part + Points** 会永久删除该静态 Part 及其顶点，但当前服务会话中可使用 **Undo last point deletion** 恢复一次。4DGS Part 不支持顶点删除。
 
 ### Comparison、评估与导出
 

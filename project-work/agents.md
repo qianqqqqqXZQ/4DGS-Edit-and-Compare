@@ -2,10 +2,26 @@
 
 ## Overview
 
-This is a Flask and Three.js Part-Level 4DGS Animation Editor. Backend state, parsing,
+This is a Flask and Three.js 4DGS-Edit-and-Compare application. Backend state, parsing,
 animation, export, and API routes are in `app.py`; the active browser UI is
 `static/editor.html`. `app.py` still contains a legacy embedded `HTML_PAGE` fallback, but
 the root route serves the static editor when it is present.
+
+## Usability Hardening (2026-09-10)
+
+- The active viewport defaults to original source RGB (then SH-derived color) and can switch to Part colors.
+  RGB-only NPY/PT input is never reinterpreted as SH DC during import or export.
+- 4DGS frame names use natural numeric sorting. The active frame loader carries a request token so a late
+  response cannot overwrite a newer scrub position; every timeline track owns its matching playhead.
+- `POST /api/project/download` and `POST /api/project` save/load a self-contained ZIP containing canonical
+  NumPy arrays, Part metadata, keyframes, 4DGS sources, Comparison A/B clouds, and safe browser display state.
+  Project archives use no pickle, enforce member/size limits, and validate before atomically replacing state.
+- Destructive static-Part deletion has one in-process undo at `POST /api/undo`. It is intentionally a single
+  snapshot to bound memory; a downloaded project is the durable recovery point.
+- Comparison now supports metadata reads and A/B role swapping. Browser UI state survives refresh with
+  localStorage while the server remains alive; a saved project is required after server restart.
+- The server is still a trusted local, single-workspace process. A localStorage lease makes a second browser
+  tab read-only, but it is not a substitute for server-side sessions, authentication, or multi-user isolation.
 
 ## Layout
 
