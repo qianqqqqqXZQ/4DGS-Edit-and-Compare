@@ -4,6 +4,7 @@ import math
 import os
 import re
 import shutil
+import copy
 import struct
 import tempfile
 import threading
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from flask import Flask, Response, jsonify, request, send_file
+from flask import Flask, Response, jsonify, request, send_file, stream_with_context
 from scipy.spatial import cKDTree
 
 try:
@@ -48,6 +49,9 @@ PART_COLORS = [
 ]
 C0 = 0.28209479177387814
 SUPPORTED_POINTCLOUD_EXTENSIONS = (".ply", ".pt", ".npy")
+MAX_POINT_CLOUD_POINTS = int(os.environ.get("EDITOR_MAX_POINTS", "5000000"))
+EVALUATION_REPORT_RETENTION = int(os.environ.get("EDITOR_EVALUATION_REPORT_RETENTION", "100"))
+BROWSER_EXPORT_MAX_FRAMES = int(os.environ.get("EDITOR_BROWSER_EXPORT_MAX_FRAMES", "1000"))
 
 # The editor keeps one in-memory workspace, so it is intended for a trusted
 # local user.  Bind to localhost by default; deployments that deliberately
@@ -136,6 +140,23 @@ def _json_object(default: Optional[Dict[str, Any]] = None) -> Optional[Dict[str,
         return dict(default)
     return body if isinstance(body, dict) else None
 
+
+def _natural_filename_key(path: Path) -> List[Any]:
+    """Sort frame names the way a user expects: frame_2 precedes frame_10."""
+    return [int(token) if token.isdigit() else token.casefold() for token in re.split(r"(\d+)", path.name)]
+
+
+def _clean_part_name(value: Any, default: str) -> str:
+    """Keep names readable in the UI and safe to place in every client representation."""
+    name = str(value if value is not None else default).strip()
+    if not name:
+        name = default
+    if len(name) > 100:
+        raise ValueError("Part name must be at most 100 characters")
+    if any(ord(character) < 32 or ord(character) == 127 for character in name):
+        raise ValueError("Part name must not contain control characters")
+    return name
+
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = 400 * 1024 * 1024
 
@@ -163,6 +184,7 @@ STATE: Dict[str, Any] = {
     "export_done": False,
     "export_active": False,
     "4dgs_parts": {},
+    "undo_snapshot": None,
 }
 STATE_LOCK = threading.RLock()
 
@@ -340,6 +362,8 @@ def _normalise_frame(obj: Any) -> Dict[str, Any]:
         raise ValueError("XYZ coordinates must have shape (N, 3)")
     if len(xyz) <= 0:
         raise ValueError("Point-cloud data must contain at least one vertex")
+    if len(xyz) > MAX_POINT_CLOUD_POINTS:
+        raise ValueError(f"Point-cloud data exceeds the configured limit of {MAX_POINT_CLOUD_POINTS:,} points")
     if not np.isfinite(xyz).all():
         raise ValueError("XYZ coordinates must be finite")
     n = len(xyz)
@@ -349,6 +373,10 @@ def _normalise_frame(obj: Any) -> Dict[str, Any]:
         quats[:, 0] = 1.0
     if not np.isfinite(quats).all():
         raise ValueError("quaternion values must be finite")
+    quaternion_norms = np.linalg.norm(quats, axis=1, keepdims=True)
+    if np.any(quaternion_norms < 1e-12):
+        raise ValueError("quaternion values must not have zero length")
+    quats = quats / quaternion_norms
     scales = _field(obj, ["scales", "scale", "scaling"])
     scales = _arr(scales, (n, 3), 0.0, name="scales")
     if not np.isfinite(scales).all():
@@ -358,7 +386,8 @@ def _normalise_frame(obj: Any) -> Dict[str, Any]:
     if not np.isfinite(opacities).all():
         raise ValueError("opacity values must be finite")
     explicit_colors = _normalise_rgb(_field(obj, ["colors", "rgb", "color"]), n, strict=True)
-    sh0 = _normalise_sh0(_field(obj, ["sh0", "features_dc", "colors", "rgb", "color"]), n)
+    # RGB is display data; it is not a spherical-harmonic DC coefficient.
+    sh0 = _normalise_sh0(_field(obj, ["sh0", "features_dc"]), n)
     sh_rest = _normalise_sh_rest(_field(obj, ["sh_rest", "features_rest", "shN"]), n)
     degree = _normalise_sh_degree(_field(obj, ["sh_degree", "degree"]), sh_rest)
     return {"xyz": xyz, "quats": quats, "scales": scales, "opacities": opacities,
@@ -382,6 +411,8 @@ def load_ply_bytes(data: bytes) -> Dict[str, Any]:
     n = len(xyz)
     if n <= 0:
         raise ValueError("PLY point cloud must contain at least one vertex")
+    if n > MAX_POINT_CLOUD_POINTS:
+        raise ValueError(f"PLY point cloud exceeds the configured limit of {MAX_POINT_CLOUD_POINTS:,} points")
     if not np.isfinite(xyz).all():
         raise ValueError("PLY XYZ coordinates must be finite")
     rgb_keys = ("red", "green", "blue")
@@ -407,6 +438,10 @@ def load_ply_bytes(data: bytes) -> Dict[str, Any]:
         quats = np.stack([vertex[k] for k, _ in qnames], axis=1).astype(np.float64)
         if not np.isfinite(quats).all():
             raise ValueError("PLY quaternion values must be finite")
+        quaternion_norms = np.linalg.norm(quats, axis=1, keepdims=True)
+        if np.any(quaternion_norms < 1e-12):
+            raise ValueError("PLY quaternion values must not have zero length")
+        quats = quats / quaternion_norms
     scale_names = [("scale_0", "scale_x"), ("scale_1", "scale_y"), ("scale_2", "scale_z")]
     scale_presence = [any(name in names for name in aliases) for aliases in scale_names]
     if any(scale_presence) and not all(scale_presence):
@@ -623,7 +658,7 @@ def load_4dgs_dir(dir_path: str) -> Dict[str, Any]:
     path = Path(dir_path)
     if not path.is_dir():
         raise FileNotFoundError(f"4DGS directory not found: {dir_path}")
-    files = sorted((p for p in path.iterdir() if p.is_file() and p.suffix.lower() in (".pt", ".npy")), key=lambda p: p.name.lower())
+    files = sorted((p for p in path.iterdir() if p.is_file() and p.suffix.lower() in (".pt", ".npy")), key=_natural_filename_key)
     if not files:
         raise ValueError(f"No .pt or .npy frames found in {dir_path}")
     frames = [_load_pointcloud_path(str(p)) for p in files]
@@ -722,12 +757,18 @@ def _serialize_part(pid: int, part: Dict[str, Any]) -> Dict[str, Any]:
 
 def state_summary() -> Dict[str, Any]:
     with STATE_LOCK:
+        display_vertices = int(STATE["n_vertices"])
+        for info in STATE["4dgs_parts"].values():
+            frames = info.get("frames") or []
+            if frames:
+                display_vertices += int(frames[0].get("n_vertices", 0))
         return {"loaded": STATE["loaded"], "filename": STATE["filename"], "n_vertices": STATE["n_vertices"],
+                "n_display_vertices": display_vertices,
                 "sh_degree": int(STATE.get("sh_degree", 0)),
                 "num_frames": STATE["num_frames"], "interpolation_method": STATE["interpolation_method"],
                 "export_progress": STATE["export_progress"], "parts": [_serialize_part(k, v) for k, v in STATE["parts"].items()],
                 "tracks": {str(k): v for k, v in STATE["tracks"].items()},
-                "has_4dgs": bool(STATE["4dgs_parts"])}
+                "has_4dgs": bool(STATE["4dgs_parts"]), "can_undo": STATE.get("undo_snapshot") is not None}
 
 
 def _color_for(pid: int) -> List[float]:
@@ -761,7 +802,7 @@ def _reset_workspace() -> None:
         "color_valid": None, "sh_degree": 0,
         "part_id_array": None, "parts": {}, "next_part_id": 0, "tracks": {}, "num_frames": 1,
         "interpolation_method": "linear", "export_progress": -1, "export_dir": None,
-        "export_done": False, "export_active": False, "4dgs_parts": {},
+        "export_done": False, "export_active": False, "4dgs_parts": {}, "undo_snapshot": None,
     })
 
 
@@ -960,6 +1001,19 @@ def _frame_pt_bytes(frame: Dict[str, Any]) -> io.BytesIO:
     return output
 
 
+def _stream_staged_download(path: str):
+    """Stream a temporary artifact and remove it as soon as consumption ends."""
+    try:
+        with open(path, "rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                yield chunk
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def compute_frame_data(frame: int) -> Tuple[np.ndarray, np.ndarray]:
     """Compute transformed static arrays from the immutable STATE source data."""
     xyz = np.array(STATE["xyz"], dtype=np.float64, copy=True) if STATE["xyz"] is not None else np.zeros((0, 3))
@@ -1036,9 +1090,9 @@ def frame_payload(frame: int) -> Dict[str, Any]:
 def _raw_pointcloud_arrays(frame: int = 0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return source positions, display colors, and Part ids without keyframe transforms."""
     static_xyz = np.asarray(STATE["xyz"], dtype=np.float64) if STATE["xyz"] is not None else np.zeros((0, 3), dtype=np.float64)
-    static_sh0 = np.asarray(STATE["sh0"], dtype=np.float64) if STATE["sh0"] is not None else np.zeros((len(static_xyz), 3), dtype=np.float64)
     static_ids = np.asarray(STATE["part_id_array"], dtype=np.int32) if STATE["part_id_array"] is not None else np.full(len(static_xyz), -1, dtype=np.int32)
-    colors = sh_to_rgb(static_sh0)
+    colors = _original_colors({"n_vertices": len(static_xyz), "sh0": STATE.get("sh0"),
+                               "colors": STATE.get("colors"), "color_valid": STATE.get("color_valid")})
     if len(colors) != len(static_xyz):
         colors = np.zeros((len(static_xyz), 3), dtype=np.float64)
     xyz_chunks, color_chunks, id_chunks = [static_xyz], [colors], [static_ids]
@@ -1051,7 +1105,7 @@ def _raw_pointcloud_arrays(frame: int = 0) -> Tuple[np.ndarray, np.ndarray, np.n
         source_frame = info["frames"][_get_4dgs_frame_idx(pid, frame)]
         count = int(source_frame["n_vertices"])
         xyz_chunks.append(np.asarray(source_frame["xyz"], dtype=np.float64))
-        color_chunks.append(np.tile(np.asarray(part["color"], dtype=np.float64), (count, 1)))
+        color_chunks.append(_original_colors(source_frame))
         id_chunks.append(np.full(count, pid, dtype=np.int32))
     return np.concatenate(xyz_chunks, axis=0), np.concatenate(color_chunks, axis=0), np.concatenate(id_chunks, axis=0)
 
@@ -1092,11 +1146,9 @@ def _comparison_source_arrays(source: Dict[str, Any]) -> Tuple[np.ndarray, np.nd
 
 @app.get("/")
 def index():
-    editor_path = os.path.join(BASE_DIR, "static", "editor.html")
-    if os.path.isfile(editor_path):
-        with open(editor_path, "r", encoding="utf-8") as handle:
-            return handle.read()
-    return HTML_PAGE
+    # There is one supported UI. A missing static artifact should fail visibly
+    # during packaging rather than silently serving an obsolete fallback page.
+    return app.send_static_file("editor.html")
 
 @app.get("/api/state")
 def api_state(): return jsonify(state_summary())
@@ -1153,7 +1205,7 @@ def api_upload():
             count = source["n_vertices"]
             pid = STATE["next_part_id"]; STATE["next_part_id"] += 1
             indices = set(range(offset, offset + count))
-            STATE["parts"][pid] = {"name": os.path.splitext(filename)[0], "color": _color_for(pid),
+            STATE["parts"][pid] = {"name": _clean_part_name(os.path.splitext(filename)[0], f"Part {pid}"), "color": _color_for(pid),
                                     "pivot": np.mean(parsed["xyz"][offset:offset + count], axis=0).tolist() if count else [0, 0, 0],
                                     "vertex_indices": indices}
             STATE["part_id_array"][list(indices)] = pid
@@ -1214,7 +1266,7 @@ def api_upload_append():
             pid = STATE["next_part_id"]
             STATE["next_part_id"] += 1
             indices = set(range(offset, offset + count))
-            STATE["parts"][pid] = {"name": os.path.splitext(filename)[0], "color": _color_for(pid),
+            STATE["parts"][pid] = {"name": _clean_part_name(os.path.splitext(filename)[0], f"Part {pid}"), "color": _color_for(pid),
                                     "pivot": np.mean(STATE["xyz"][offset:offset + count], axis=0).tolist() if count else [0, 0, 0],
                                     "vertex_indices": indices}
             if indices:
@@ -1253,7 +1305,7 @@ def api_upload_4dgs():
         pid = STATE["next_part_id"]
         STATE["next_part_id"] += 1
         first_frame = source["frames"][0]
-        STATE["parts"][pid] = {"name": str(body.get("name") or f"4DGS Part {pid}"), "color": _color_for(pid),
+        STATE["parts"][pid] = {"name": _clean_part_name(body.get("name"), f"4DGS Part {pid}"), "color": _color_for(pid),
                                 "pivot": np.mean(first_frame["xyz"], axis=0).tolist() if first_frame["n_vertices"] else [0, 0, 0],
                                 "vertex_indices": set(), "is_4dgs": True}
         STATE["4dgs_parts"][pid] = {**source, "sh_degree": workspace_degree, "loop": bool(body.get("loop", False))}
@@ -1273,12 +1325,15 @@ def api_pointcloud():
         frame = max(0, int(request.args.get("frame", "0")))
     except ValueError:
         return jsonify({"error": "frame must be an integer"}), 400
+    color_mode = request.args.get("color_mode", "original").strip().lower()
+    if color_mode not in ("original", "part"):
+        return jsonify({"error": "color_mode must be 'original' or 'part'"}), 400
     with STATE_LOCK:
         if not _workspace_has_data():
             return jsonify({"error": "No point-cloud data is loaded"}), 400
         xyz, colors, part_ids = _raw_pointcloud_arrays(frame)
-        for pid, part in STATE["parts"].items():
-            if not part.get("is_4dgs", False):
+        if color_mode == "part":
+            for pid, part in STATE["parts"].items():
                 colors[part_ids == pid] = np.asarray(part["color"], dtype=np.float64)
     buf = io.BytesIO()
     buf.write(struct.pack("<I", int(len(xyz))))
@@ -1332,6 +1387,32 @@ def api_comparison_upload():
             for cloud_id, info in COMPARISON_STATE["clouds"].items()
         ]
     return jsonify({"ok": True, "clouds": clouds})
+
+
+def _comparison_metadata() -> List[Dict[str, Any]]:
+    return [
+        {"id": cloud_id, "filename": info["filename"], "n_vertices": info["n_vertices"],
+         "has_colors": info["has_colors"]}
+        for cloud_id, info in COMPARISON_STATE["clouds"].items() if info
+    ]
+
+
+@app.get("/api/comparison")
+def api_comparison_metadata():
+    with STATE_LOCK:
+        clouds = _comparison_metadata()
+    return jsonify({"loaded": len(clouds) == 2, "clouds": clouds})
+
+
+@app.post("/api/comparison/swap")
+def api_comparison_swap():
+    with STATE_LOCK:
+        clouds = COMPARISON_STATE["clouds"]
+        if not clouds.get("a") or not clouds.get("b"):
+            return jsonify({"error": "Load both comparison point clouds before swapping"}), 400
+        clouds["a"], clouds["b"] = clouds["b"], clouds["a"]
+        metadata = _comparison_metadata()
+    return jsonify({"ok": True, "clouds": metadata})
 
 
 @app.get("/api/comparison/<any(a,b):cloud_id>")
@@ -1598,7 +1679,9 @@ def _comparison_markdown(filename_a: str, filename_b: str, points_a: np.ndarray,
 
 @app.post("/api/comparison/evaluate")
 def api_comparison_evaluate():
-    body = request.get_json(silent=True) or {}
+    body = _json_object()
+    if body is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     selected = body.get("metrics")
     if not isinstance(selected, list):
         return jsonify({"error": "metrics must be a list"}), 400
@@ -1685,6 +1768,13 @@ def api_comparison_evaluate():
     path = os.path.join(EVALUATION_ROOT, filename)
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(markdown)
+    if EVALUATION_REPORT_RETENTION > 0:
+        reports = sorted(Path(EVALUATION_ROOT).glob("comparison_evaluation_*.md"), key=lambda item: item.stat().st_mtime)
+        for stale_report in reports[:-EVALUATION_REPORT_RETENTION]:
+            try:
+                stale_report.unlink()
+            except OSError:
+                pass
     return jsonify({"ok": True, "filename": filename, "download_url": f"/api/comparison/evaluations/{filename}",
                     "selected_metrics": selected, "values": values, "markdown": markdown,
                     "runtime_seconds": runtime_seconds, "query_engine": query_engine})
@@ -1708,7 +1798,9 @@ def api_parts():
 
 @app.post("/api/parts")
 def api_create_part_v2():
-    body = request.get_json(silent=True) or {}
+    body = _json_object()
+    if body is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     with STATE_LOCK:
         if not STATE["loaded"] or STATE["xyz"] is None:
             return jsonify({"error": "Upload a point cloud before creating a Part"}), 400
@@ -1720,7 +1812,7 @@ def api_create_part_v2():
         STATE["next_part_id"] += 1
         _remove_static_indices_from_parts(indices)
         pivot = np.mean(STATE["xyz"][indices], axis=0).tolist() if indices else [0, 0, 0]
-        STATE["parts"][pid] = {"name": str(body.get("name") or f"Part {pid}"), "color": _color_for(pid),
+        STATE["parts"][pid] = {"name": _clean_part_name(body.get("name"), f"Part {pid}"), "color": _color_for(pid),
                                 "pivot": pivot, "vertex_indices": set(indices)}
         STATE["part_id_array"][indices] = pid
         STATE["tracks"][pid] = []
@@ -1729,14 +1821,16 @@ def api_create_part_v2():
 
 @app.put("/api/parts/<int:pid>")
 def api_update_part_v2(pid):
-    body = request.get_json(silent=True) or {}
+    body = _json_object()
+    if body is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     with STATE_LOCK:
         part = STATE["parts"].get(pid)
         if part is None:
             return jsonify({"error": "Part not found"}), 404
         try:
             if "name" in body:
-                part["name"] = str(body["name"])
+                part["name"] = _clean_part_name(body["name"], f"Part {pid}")
             for field in ("pivot", "color"):
                 if field in body:
                     values = body[field]
@@ -1781,6 +1875,9 @@ def api_delete_part_vertices(pid):
             return jsonify({"error": "Part not found"}), 404
         if part.get("is_4dgs", False):
             return jsonify({"error": "Vertex deletion is only supported for static Parts"}), 400
+        # Keep one complete, in-process checkpoint for an intentional but
+        # recoverable destructive edit. It is replaced by the next deletion.
+        STATE["undo_snapshot"] = {key: copy.deepcopy(value) for key, value in STATE.items() if key != "undo_snapshot"}
         deleted = _delete_static_vertices(sorted(part.get("vertex_indices", set())))
         STATE["parts"].pop(pid, None)
         STATE["tracks"].pop(pid, None)
@@ -1789,9 +1886,23 @@ def api_delete_part_vertices(pid):
                         "n_vertices": int(STATE["n_vertices"])})
 
 
+@app.post("/api/undo")
+def api_undo():
+    with STATE_LOCK:
+        snapshot = STATE.get("undo_snapshot")
+        if snapshot is None:
+            return jsonify({"error": "There is no destructive edit to undo"}), 400
+        STATE.clear()
+        STATE.update(snapshot)
+        STATE["undo_snapshot"] = None
+    return jsonify({"ok": True, "state": state_summary()})
+
+
 @app.post("/api/parts/<int:pid>/assign")
 def api_assign_part_v2(pid):
-    body = request.get_json(silent=True) or {}
+    body = _json_object()
+    if body is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     with STATE_LOCK:
         part = STATE["parts"].get(pid)
         if part is None:
@@ -1847,7 +1958,9 @@ def api_get_keyframes(pid):
 
 @app.post("/api/keyframes/<int:pid>")
 def api_put_keyframe(pid):
-    body = request.get_json(silent=True) or {}
+    body = _json_object()
+    if body is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     with STATE_LOCK:
         if pid not in STATE["parts"]:
             return jsonify({"error": "Part not found"}), 404
@@ -1898,7 +2011,9 @@ def _update_settings(body: Dict[str, Any]):
 
 @app.put("/api/settings")
 def api_put_settings():
-    body = request.get_json(silent=True) or {}
+    body = _json_object()
+    if body is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     with STATE_LOCK:
         error = _update_settings(body)
         if error:
@@ -2073,19 +2188,28 @@ def api_export_download():
             return jsonify({"error": "No point-cloud data is loaded"}), 400
         frame_count = int(STATE["num_frames"])
         source_name = str(STATE.get("filename") or "point_cloud")
+    if frame_count > BROWSER_EXPORT_MAX_FRAMES:
+        return jsonify({"error": f"Browser ZIP export is limited to {BROWSER_EXPORT_MAX_FRAMES:,} frames; use the server-path export API for larger jobs"}), 400
     try:
-        archive_buffer = io.BytesIO()
-        with zipfile.ZipFile(archive_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        descriptor, archive_path = tempfile.mkstemp(prefix="4dgs_browser_export_", suffix=".zip", dir=EXPORT_ROOT)
+        os.close(descriptor)
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
             for index in range(frame_count):
                 payload = _export_frame_payload(index, scale=scale, color_mode=color_mode)
                 frame_buffer = _frame_pt_bytes(payload)
                 archive.writestr(f"frame_{index:04d}.pt", frame_buffer.getvalue())
-        archive_buffer.seek(0)
         default_stem = (Path(os.path.basename(source_name)).stem or "point_cloud") + ".frames"
         filename = _clean_download_filename(body.get("filename"), default_stem, "zip")
     except (MemoryError, RuntimeError, ValueError, TypeError, OSError) as exc:
+        if "archive_path" in locals():
+            try:
+                os.remove(archive_path)
+            except OSError:
+                pass
         return jsonify({"error": str(exc)}), 400
-    return send_file(archive_buffer, as_attachment=True, download_name=filename, mimetype="application/zip")
+    response = Response(stream_with_context(_stream_staged_download(archive_path)), mimetype="application/zip")
+    response.headers.set("Content-Disposition", "attachment", filename=filename)
+    return response
 
 
 @app.post("/api/create-part")
@@ -2141,10 +2265,12 @@ def api_import_4dgs():
     if not files: return jsonify({"error": "请选择 .pt/.npy 帧序列"}), 400
     frames = []
     try:
-        for f in files:
+        upload_pairs = sorted(zip(names, files), key=lambda item: _natural_filename_key(Path(item[0] or item[1].filename or "")))
+        for source_name, f in upload_pairs:
             extension = os.path.splitext(f.filename)[1].lower()
             if extension not in (".pt", ".npy"): continue
             frames.append(_load_pointcloud_bytes(f.read(), extension))
+        names = [source_name or f.filename for source_name, f in upload_pairs if os.path.splitext(f.filename)[1].lower() in (".pt", ".npy")]
     except Exception as exc: return jsonify({"error": str(exc)}), 400
     if not frames: return jsonify({"error": "没有有效的 .pt/.npy 文件"}), 400
     with STATE_LOCK:
