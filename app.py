@@ -52,6 +52,10 @@ SUPPORTED_POINTCLOUD_EXTENSIONS = (".ply", ".pt", ".npy")
 MAX_POINT_CLOUD_POINTS = int(os.environ.get("EDITOR_MAX_POINTS", "5000000"))
 EVALUATION_REPORT_RETENTION = int(os.environ.get("EDITOR_EVALUATION_REPORT_RETENTION", "100"))
 BROWSER_EXPORT_MAX_FRAMES = int(os.environ.get("EDITOR_BROWSER_EXPORT_MAX_FRAMES", "1000"))
+PROJECT_ARCHIVE_MAX_BYTES = int(os.environ.get("EDITOR_PROJECT_ARCHIVE_MAX_BYTES", str(400 * 1024 * 1024)))
+PROJECT_ARCHIVE_MAX_MEMBERS = int(os.environ.get("EDITOR_PROJECT_ARCHIVE_MAX_MEMBERS", "10050"))
+PROJECT_FORMAT = "part-level-4dgs-project"
+PROJECT_VERSION = 1
 
 # The editor keeps one in-memory workspace, so it is intended for a trusted
 # local user.  Bind to localhost by default; deployments that deliberately
@@ -393,6 +397,57 @@ def _normalise_frame(obj: Any) -> Dict[str, Any]:
     return {"xyz": xyz, "quats": quats, "scales": scales, "opacities": opacities,
             "sh0": sh0, "sh_rest": sh_rest, "sh_degree": degree, "n_vertices": n,
             "colors": explicit_colors, "has_colors": explicit_colors is not None}
+
+
+def _project_frame_bytes(frame: Dict[str, Any]) -> bytes:
+    """Encode canonical point data without pickle for a portable project archive."""
+    output = io.BytesIO()
+    colors = frame.get("colors")
+    has_colors = bool(frame.get("has_colors", colors is not None))
+    color_valid = frame.get("color_valid")
+    if color_valid is None:
+        color_valid = np.full(frame["n_vertices"], has_colors, dtype=bool)
+    color_valid = np.asarray(color_valid, dtype=bool).reshape(frame["n_vertices"])
+    np.savez_compressed(
+        output,
+        xyz=np.asarray(frame["xyz"], dtype=np.float64),
+        quats=np.asarray(frame["quats"], dtype=np.float64),
+        scales=np.asarray(frame["scales"], dtype=np.float64),
+        opacities=np.asarray(frame["opacities"], dtype=np.float64),
+        sh0=np.asarray(frame["sh0"], dtype=np.float64),
+        sh_rest=np.asarray(frame.get("sh_rest") if frame.get("sh_rest") is not None else np.zeros((frame["n_vertices"], 0, 3)), dtype=np.float64),
+        sh_degree=np.asarray(int(frame.get("sh_degree", 0)), dtype=np.int64),
+        colors=np.asarray(colors if colors is not None else np.zeros((frame["n_vertices"], 3)), dtype=np.float64),
+        has_colors=np.asarray(has_colors, dtype=np.bool_),
+        color_valid=color_valid,
+    )
+    return output.getvalue()
+
+
+def _project_frame_from_bytes(data: bytes) -> Dict[str, Any]:
+    """Decode an archive frame with pickle disabled, then apply normal input validation."""
+    expected = {"xyz", "quats", "scales", "opacities", "sh0", "sh_rest", "sh_degree", "colors", "has_colors", "color_valid"}
+    try:
+        with np.load(io.BytesIO(data), allow_pickle=False) as archive:
+            if set(archive.files) != expected:
+                raise ValueError("project frame has an invalid data layout")
+            source = {name: archive[name] for name in expected}
+    except (OSError, ValueError, KeyError) as exc:
+        raise ValueError(f"invalid project frame: {exc}") from exc
+    has_colors = bool(np.asarray(source.pop("has_colors")).item())
+    try:
+        color_valid = np.asarray(source.pop("color_valid"), dtype=bool).reshape(-1)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("project frame color validity is invalid") from exc
+    source["sh_degree"] = int(np.asarray(source["sh_degree"]).item())
+    if len(color_valid) != len(source["xyz"]):
+        raise ValueError("project frame color validity has the wrong length")
+    if not has_colors or not np.any(color_valid):
+        source.pop("colors", None)
+    frame = _normalise_frame(source)
+    frame["color_valid"] = color_valid
+    frame["has_colors"] = bool(np.any(color_valid))
+    return frame
 
 
 def load_ply_bytes(data: bytes) -> Dict[str, Any]:
@@ -779,6 +834,270 @@ def _workspace_has_data() -> bool:
     return int(STATE.get("n_vertices", 0)) > 0 or bool(STATE.get("4dgs_parts"))
 
 
+def _project_part_manifest(pid: int, part: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": int(pid), "name": str(part["name"]), "color": [float(value) for value in part["color"]],
+        "pivot": [float(value) for value in part["pivot"]],
+        "vertex_indices": sorted(int(index) for index in part.get("vertex_indices", set())),
+        "is_4dgs": bool(part.get("is_4dgs", False)),
+    }
+
+
+def _clean_project_ui(value: Any) -> Dict[str, Any]:
+    """Keep browser-only display choices in a project without trusting arbitrary JSON."""
+    if not isinstance(value, dict):
+        return {}
+    output: Dict[str, Any] = {}
+    try:
+        scale = float(value.get("editorScale", 1))
+        if math.isfinite(scale) and 0.1 <= scale <= 20:
+            output["editorScale"] = scale
+    except (TypeError, ValueError, OverflowError):
+        pass
+    if value.get("displayColorMode") in ("original", "part"):
+        output["displayColorMode"] = value["displayColorMode"]
+    for name in ("comparisonMode",):
+        if isinstance(value.get(name), bool):
+            output[name] = value[name]
+    if value.get("comparisonLayout") in ("single", "dual"):
+        output["comparisonLayout"] = value["comparisonLayout"]
+    if isinstance(value.get("comparisonVisibility"), dict):
+        output["comparisonVisibility"] = {key: bool(value["comparisonVisibility"].get(key, True)) for key in ("a", "b")}
+    for name in ("comparisonTransforms", "comparisonTransformUiValues"):
+        raw = value.get(name)
+        if not isinstance(raw, dict):
+            continue
+        cleaned: Dict[str, Dict[str, float]] = {}
+        for cloud_id in ("a", "b"):
+            transform = raw.get(cloud_id)
+            if not isinstance(transform, dict):
+                continue
+            candidate: Dict[str, float] = {}
+            for field in ("tx", "ty", "tz", "rx", "ry", "rz", "scale"):
+                try:
+                    number = float(transform.get(field, 1 if field == "scale" else 0))
+                except (TypeError, ValueError, OverflowError):
+                    candidate = {}
+                    break
+                if not math.isfinite(number):
+                    candidate = {}
+                    break
+                candidate[field] = number
+            if candidate and 0.1 <= candidate["scale"] <= 20:
+                cleaned[cloud_id] = candidate
+        if cleaned:
+            output[name] = cleaned
+    if value.get("comparisonTransformTarget") in ("a", "b"):
+        output["comparisonTransformTarget"] = value["comparisonTransformTarget"]
+    return output
+
+
+def _project_archive_bytes(project_ui: Any = None) -> io.BytesIO:
+    """Create a self-contained, pickle-free workspace archive while holding a stable snapshot."""
+    with STATE_LOCK:
+        workspace = copy.deepcopy(STATE)
+        comparison = copy.deepcopy(COMPARISON_STATE["clouds"])
+    output = io.BytesIO()
+    manifest: Dict[str, Any] = {
+        "format": PROJECT_FORMAT, "version": PROJECT_VERSION,
+        "workspace": {
+            "filename": str(workspace.get("filename", "")), "num_frames": int(workspace["num_frames"]),
+            "interpolation_method": str(workspace["interpolation_method"]),
+            "parts": [_project_part_manifest(pid, part) for pid, part in workspace["parts"].items()],
+            "tracks": {str(pid): values for pid, values in workspace["tracks"].items()},
+            "static": "static.npz" if int(workspace["n_vertices"]) else None,
+            "four_d_parts": [], "comparison": [], "ui": _clean_project_ui(project_ui),
+        },
+    }
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        if manifest["workspace"]["static"]:
+            archive.writestr("static.npz", _project_frame_bytes({
+                key: workspace[key] for key in ("xyz", "quats", "scales", "opacities", "sh0", "sh_rest", "sh_degree", "n_vertices", "colors", "color_valid")
+            }))
+        for pid, info in workspace["4dgs_parts"].items():
+            frame_names = []
+            for index, frame in enumerate(info.get("frames") or []):
+                name = f"4dgs/{int(pid)}/frame_{index:06d}.npz"
+                archive.writestr(name, _project_frame_bytes(frame))
+                frame_names.append(name)
+            manifest["workspace"]["four_d_parts"].append({
+                "id": int(pid), "loop": bool(info.get("loop", False)),
+                "filenames": [str(name) for name in info.get("filenames") or []], "frames": frame_names,
+            })
+        for cloud_id in ("a", "b"):
+            info = comparison.get(cloud_id)
+            if not info:
+                continue
+            name = f"comparison/{cloud_id}.npz"
+            archive.writestr(name, _project_frame_bytes(_normalise_frame(info["source"])))
+            manifest["workspace"]["comparison"].append({"id": cloud_id, "filename": str(info["filename"]), "frame": name})
+        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, separators=(",", ":")))
+    output.seek(0)
+    return output
+
+
+def _read_project_member(archive: zipfile.ZipFile, name: Any) -> bytes:
+    if not isinstance(name, str) or not name or name.startswith("/") or ".." in Path(name).parts:
+        raise ValueError("project archive contains an invalid member path")
+    try:
+        return archive.read(name)
+    except KeyError as exc:
+        raise ValueError(f"project archive is missing {name}") from exc
+
+
+def _load_project_archive(data: bytes) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    """Validate and reconstruct a full editor + comparison state before replacing either one."""
+    if len(data) > PROJECT_ARCHIVE_MAX_BYTES:
+        raise ValueError("project archive exceeds the configured size limit")
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise ValueError("project file is not a valid ZIP archive") from exc
+    with archive:
+        members = archive.infolist()
+        if len(members) > PROJECT_ARCHIVE_MAX_MEMBERS:
+            raise ValueError("project archive has too many files")
+        if sum(info.file_size for info in members) > PROJECT_ARCHIVE_MAX_BYTES:
+            raise ValueError("project archive expands beyond the configured size limit")
+        try:
+            manifest = json.loads(_read_project_member(archive, "manifest.json").decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("project manifest is not valid UTF-8 JSON") from exc
+        if not isinstance(manifest, dict) or manifest.get("format") != PROJECT_FORMAT or manifest.get("version") != PROJECT_VERSION:
+            raise ValueError("unsupported project format or version")
+        workspace = manifest.get("workspace")
+        if not isinstance(workspace, dict):
+            raise ValueError("project manifest has no workspace")
+        static_member = workspace.get("static")
+        if static_member is None:
+            static = None
+            static_count = 0
+        else:
+            static = _project_frame_from_bytes(_read_project_member(archive, static_member))
+            static_count = int(static["n_vertices"])
+        raw_parts = workspace.get("parts")
+        raw_tracks = workspace.get("tracks")
+        raw_4d = workspace.get("four_d_parts")
+        if not isinstance(raw_parts, list) or not isinstance(raw_tracks, dict) or not isinstance(raw_4d, list):
+            raise ValueError("project manifest has invalid Parts or timeline data")
+        four_d: Dict[int, Dict[str, Any]] = {}
+        for item in raw_4d:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), int) or not isinstance(item.get("frames"), list):
+                raise ValueError("project manifest has an invalid 4DGS Part")
+            pid = int(item["id"])
+            if pid < 0 or pid in four_d or not item["frames"]:
+                raise ValueError("project manifest has invalid 4DGS Part IDs or frames")
+            frames = [_project_frame_from_bytes(_read_project_member(archive, name)) for name in item["frames"]]
+            filenames = item.get("filenames")
+            if not isinstance(filenames, list) or len(filenames) != len(frames):
+                filenames = [Path(name).name for name in item["frames"]]
+            four_d[pid] = {"frames": frames, "n_frames_src": len(frames), "loop": bool(item.get("loop", False)),
+                           "filenames": [str(name) for name in filenames]}
+        parts: Dict[int, Dict[str, Any]] = {}
+        part_ids = np.full(static_count, -1, dtype=np.int32)
+        tracks: Dict[int, List[Dict[str, float]]] = {}
+        for item in raw_parts:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), int):
+                raise ValueError("project manifest has an invalid Part")
+            pid = int(item["id"])
+            if pid < 0 or pid in parts:
+                raise ValueError("project manifest has duplicate Part IDs")
+            is_4dgs = bool(item.get("is_4dgs", False))
+            if is_4dgs != (pid in four_d):
+                raise ValueError("project Part and 4DGS data do not match")
+            name = _clean_part_name(item.get("name"), f"Part {pid}")
+            color = _normalise_rgb(item.get("color"), 1, name="Part color", strict=True)
+            pivot = np.asarray(item.get("pivot"), dtype=np.float64)
+            if color is None or pivot.shape != (3,) or not np.isfinite(pivot).all():
+                raise ValueError("project Part color or pivot is invalid")
+            raw_indices = item.get("vertex_indices", [])
+            if not isinstance(raw_indices, list) or any(isinstance(index, bool) for index in raw_indices):
+                raise ValueError("project Part indices are invalid")
+            if is_4dgs and raw_indices:
+                raise ValueError("a 4DGS Part cannot own static vertex indices")
+            try:
+                indices = [] if is_4dgs else [int(index) for index in raw_indices]
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("project Part indices are invalid") from exc
+            if len(indices) != len(set(indices)) or any(index < 0 or index >= static_count for index in indices) or any(part_ids[index] >= 0 for index in indices):
+                raise ValueError("project Part indices are invalid or overlap")
+            if indices:
+                part_ids[indices] = pid
+            parts[pid] = {"name": name, "color": color[0].tolist(), "pivot": pivot.tolist(),
+                          "vertex_indices": set(indices), **({"is_4dgs": True} if is_4dgs else {})}
+            raw_keys = raw_tracks.get(str(pid), [])
+            if not isinstance(raw_keys, list):
+                raise ValueError("project keyframes are invalid")
+            clean_keys = []
+            for key in raw_keys:
+                if not isinstance(key, dict):
+                    raise ValueError("project keyframes are invalid")
+                try:
+                    frame = int(key.get("frame", 0))
+                    values = {name: float(key.get(name, 0.0)) for name in ("tx", "ty", "tz", "rx", "ry", "rz")}
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("project keyframes are invalid") from exc
+                if not all(math.isfinite(value) for value in values.values()):
+                    raise ValueError("project keyframes are invalid")
+                clean_keys.append({"frame": frame, **values})
+            tracks[pid] = clean_keys
+        if set(four_d) != {pid for pid, part in parts.items() if part.get("is_4dgs")}:
+            raise ValueError("project includes unowned 4DGS data")
+        degree = max([int(static["sh_degree"]) if static else 0] + [max(int(frame["sh_degree"]) for frame in item["frames"]) for item in four_d.values()])
+        target_k = max(0, (degree + 1) ** 2 - 1)
+        if static is None:
+            new_state: Dict[str, Any] = {}
+            # Populate the canonical zero-length static arrays below.
+            _empty_static_arrays_for(new_state)
+        else:
+            static["sh_rest"] = _pad_sh_rest(static.get("sh_rest"), static_count, target_k)
+            new_state = {key: static[key] for key in ("xyz", "quats", "scales", "opacities", "sh0", "sh_rest", "colors")}
+            new_state["color_valid"] = np.asarray(static.get("color_valid"), dtype=bool).reshape(static_count)
+            new_state["part_id_array"] = part_ids
+            new_state["n_vertices"] = static_count
+        for info in four_d.values():
+            for frame in info["frames"]:
+                frame["sh_rest"] = _pad_sh_rest(frame.get("sh_rest"), frame["n_vertices"], target_k)
+                frame["sh_degree"] = degree
+            info["sh_degree"] = degree
+        num_frames = int(workspace.get("num_frames", 1))
+        if not 1 <= num_frames <= 10000:
+            raise ValueError("project frame count must be between 1 and 10000")
+        method = workspace.get("interpolation_method", "linear")
+        if method not in ("linear", "catmull_rom"):
+            raise ValueError("project interpolation method is invalid")
+        for pid in tracks:
+            tracks[pid] = [dict(key, frame=max(0, min(int(key["frame"]), num_frames - 1))) for key in tracks[pid]]
+        new_state.update({"loaded": bool(static_count or four_d), "filename": str(workspace.get("filename") or "project"),
+                          "sh_degree": degree, "parts": parts, "next_part_id": max(parts, default=-1) + 1,
+                          "tracks": tracks, "num_frames": num_frames, "interpolation_method": method,
+                          "export_progress": -1, "export_dir": None, "export_done": False, "export_active": False,
+                          "4dgs_parts": four_d, "undo_snapshot": None})
+        comparison: Dict[str, Any] = {"a": None, "b": None}
+        raw_comparison = workspace.get("comparison", [])
+        if not isinstance(raw_comparison, list) or len(raw_comparison) not in (0, 2):
+            raise ValueError("project comparison data must contain zero or two clouds")
+        for item in raw_comparison:
+            if not isinstance(item, dict) or item.get("id") not in ("a", "b") or comparison[item["id"]] is not None:
+                raise ValueError("project comparison data is invalid")
+            source = _project_frame_from_bytes(_read_project_member(archive, item.get("frame")))
+            comparison[item["id"]] = {"filename": str(item.get("filename") or f"cloud_{item['id']}"),
+                                       "n_vertices": source["n_vertices"], "has_colors": bool(source.get("has_colors", False)), "source": source}
+        if any(comparison.values()) and not all(comparison.values()):
+            raise ValueError("project comparison data must include both Cloud A and Cloud B")
+    return new_state, comparison, _clean_project_ui(workspace.get("ui"))
+
+
+def _empty_static_arrays_for(destination: Dict[str, Any]) -> None:
+    destination.update({
+        "xyz": np.zeros((0, 3), dtype=np.float64), "quats": np.zeros((0, 4), dtype=np.float64),
+        "scales": np.zeros((0, 3), dtype=np.float64), "opacities": np.zeros(0, dtype=np.float64),
+        "sh0": np.zeros((0, 3), dtype=np.float64), "sh_rest": np.zeros((0, 0, 3), dtype=np.float64),
+        "colors": np.zeros((0, 3), dtype=np.float64), "color_valid": np.zeros(0, dtype=bool),
+        "part_id_array": np.zeros(0, dtype=np.int32), "n_vertices": 0,
+    })
+
+
 def _empty_static_arrays() -> None:
     """Initialise the static arrays so a 4DGS-only workspace remains well-formed."""
     STATE["xyz"] = np.zeros((0, 3), dtype=np.float64)
@@ -1152,6 +1471,40 @@ def index():
 
 @app.get("/api/state")
 def api_state(): return jsonify(state_summary())
+
+
+@app.post("/api/project/download")
+def api_project_download():
+    body = _json_object({})
+    if body is None:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
+    with STATE_LOCK:
+        if not _workspace_has_data():
+            return jsonify({"error": "Upload a point cloud before saving a project"}), 400
+        source_name = str(STATE.get("filename") or "workspace")
+    try:
+        project = _project_archive_bytes(body.get("ui"))
+        filename = _clean_download_filename(request.args.get("filename"), Path(source_name).stem + ".project", "zip")
+    except (MemoryError, OSError, RuntimeError, ValueError, TypeError) as exc:
+        return jsonify({"error": f"Could not save project: {exc}"}), 400
+    return send_file(project, as_attachment=True, download_name=filename, mimetype="application/zip")
+
+
+@app.post("/api/project")
+def api_project_upload():
+    uploaded = request.files.get("file")
+    if uploaded is None or not uploaded.filename:
+        return jsonify({"error": "Choose a project ZIP file"}), 400
+    try:
+        data = uploaded.read(PROJECT_ARCHIVE_MAX_BYTES + 1)
+        new_state, comparison, project_ui = _load_project_archive(data)
+    except (MemoryError, OSError, RuntimeError, ValueError, TypeError) as exc:
+        return jsonify({"error": f"Could not load project: {exc}"}), 400
+    with STATE_LOCK:
+        STATE.clear()
+        STATE.update(new_state)
+        COMPARISON_STATE["clouds"] = comparison
+    return jsonify({"ok": True, "state": state_summary(), "comparison_loaded": bool(comparison["a"]), "project_ui": project_ui})
 
 @app.get("/api/frame/<int:frame>")
 def api_frame(frame):
@@ -2347,7 +2700,7 @@ def api_download_all():
 
 
 HTML_PAGE = r'''<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Part-Level 4DGS Animation Editor</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>4DGS-Edit-and-Compare</title>
 <style>
 :root{--bg:#0b1020;--panel:#121a2b;--panel2:#18233a;--line:#273650;--text:#e7edf7;--muted:#8fa1bf;--accent:#43b7ff;--good:#48d597;--danger:#ff6b6b}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,Segoe UI,sans-serif;overflow:hidden}button,input,select{font:inherit;color:inherit}button{border:1px solid var(--line);background:#1c2a43;padding:8px 11px;border-radius:5px;cursor:pointer}button:hover{border-color:var(--accent);background:#233856}.app{height:100vh;display:grid;grid-template-columns:280px 1fr 320px;grid-template-rows:58px 1fr 190px}.top{grid-column:1/-1;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;padding:0 18px;background:#0f1729}.brand{font-weight:700;letter-spacing:.3px;font-size:16px}.status{color:var(--muted);font-size:12px}.toolbar{margin-left:auto;display:flex;gap:8px}.side{background:var(--panel);padding:14px;border-right:1px solid var(--line);overflow:auto}.right{background:var(--panel);padding:14px;border-left:1px solid var(--line);overflow:auto}.section{border-bottom:1px solid var(--line);padding-bottom:15px;margin-bottom:15px}.section h3{margin:0 0 10px;font-size:13px;color:#c3d1e8}.row{display:flex;gap:7px;align-items:center;margin:7px 0}.row>*{min-width:0}.grow{flex:1}.small{font-size:12px;color:var(--muted)}input[type=text],input[type=number],select{width:100%;background:#0c1425;border:1px solid var(--line);border-radius:4px;padding:7px}.file{width:100%;border:1px dashed #385071;padding:10px;border-radius:5px}.part{display:flex;align-items:center;gap:8px;padding:8px;border:1px solid transparent;border-radius:5px;cursor:pointer}.part:hover,.part.active{background:var(--panel2);border-color:var(--line)}.swatch{width:11px;height:11px;border-radius:50%}.viewport{position:relative;min-width:0;background:#080d18}.viewport canvas{display:block;width:100%;height:100%}.hint{position:absolute;left:14px;top:12px;color:var(--muted);font-size:12px;pointer-events:none}.selection{position:absolute;border:1px dashed var(--accent);background:rgba(67,183,255,.12);pointer-events:none;display:none}.timeline{grid-column:1/-1;border-top:1px solid var(--line);background:#0f1729;padding:12px 18px;display:flex;flex-direction:column;gap:10px}.timeline-head{display:flex;align-items:center;gap:10px}.timeline-head input{width:80px}.track{height:36px;position:relative;background:#0b1220;border:1px solid var(--line);border-radius:4px}.ticks{display:flex;justify-content:space-between;color:var(--muted);font-size:10px;padding:3px 5px}.key{position:absolute;top:17px;width:9px;height:9px;background:var(--accent);transform:translateX(-50%) rotate(45deg)}.playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--danger);transform:translateX(-50%)}.kv{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.kv label{font-size:11px;color:var(--muted)}.kv input{margin-top:2px}.log{font-size:12px;color:var(--muted);white-space:pre-wrap;max-height:80px;overflow:auto}
 @media(max-width:1000px){.app{grid-template-columns:220px 1fr;grid-template-rows:58px 1fr 190px}.right{display:none}}

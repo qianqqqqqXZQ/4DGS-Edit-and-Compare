@@ -82,6 +82,36 @@ class UsabilityHardeningTests(unittest.TestCase):
         self.assertIn(0, editor_app.STATE["parts"])
         self.assertFalse(self.client.get("/api/state").get_json()["can_undo"])
 
+    def test_project_archive_round_trip_restores_workspace_and_comparison(self):
+        editor_app.STATE["tracks"][0] = [{"frame": 0, "tx": 1.5, "ty": 0.0, "tz": 0.0, "rx": 0.0, "ry": 0.0, "rz": 0.0}]
+        editor_app.STATE["color_valid"] = np.asarray([True, False])
+        editor_app.COMPARISON_STATE["clouds"] = {
+            "a": {"filename": "prediction.npy", "n_vertices": 1, "has_colors": True,
+                  "source": editor_app.load_npy_bytes(self._npy_bytes([[3, 0, 0, 1, 0, 0]]))},
+            "b": {"filename": "ground_truth.npy", "n_vertices": 1, "has_colors": True,
+                  "source": editor_app.load_npy_bytes(self._npy_bytes([[4, 0, 0, 0, 1, 0]]))},
+        }
+        saved = self.client.post("/api/project/download", json={"ui": {"editorScale": 1.25, "displayColorMode": "part",
+                                                                      "comparisonTransforms": {"a": {"tx": 1, "ty": 0, "tz": 0, "rx": 0, "ry": 0, "rz": 0, "scale": 1}}}})
+        self.assertEqual(saved.status_code, 200)
+        editor_app._reset_workspace()
+        editor_app.COMPARISON_STATE["clouds"] = {"a": None, "b": None}
+        restored = self.client.post("/api/project", data={"file": (io.BytesIO(saved.data), "fixture.project.zip")})
+        self.assertEqual(restored.status_code, 200)
+        self.assertEqual(editor_app.STATE["n_vertices"], 2)
+        self.assertEqual(editor_app.STATE["parts"][0]["vertex_indices"], {0, 1})
+        self.assertEqual(editor_app.STATE["tracks"][0][0]["tx"], 1.5)
+        np.testing.assert_array_equal(editor_app.STATE["color_valid"], [True, False])
+        self.assertEqual(editor_app.COMPARISON_STATE["clouds"]["a"]["filename"], "prediction.npy")
+        self.assertEqual(restored.get_json()["project_ui"]["displayColorMode"], "part")
+        self.assertEqual(restored.get_json()["project_ui"]["editorScale"], 1.25)
+
+    @staticmethod
+    def _npy_bytes(values):
+        payload = io.BytesIO()
+        np.save(payload, np.asarray(values, dtype=np.float32))
+        return payload.getvalue()
+
     def test_comparison_swap_preserves_a_complete_two_cloud_session(self):
         editor_app.COMPARISON_STATE["clouds"] = {
             "a": {"filename": "prediction.npy", "n_vertices": 1, "has_colors": False, "source": {"xyz": np.zeros((1, 3))}},
