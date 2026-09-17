@@ -1,5 +1,20 @@
 # 4DGS-Edit-and-Compare Plan
 
+## Current Request: Fix Perspective Grid Distortion (2026-09-17)
+
+- [x] Replace the perspective-sensitive grid line alpha calculation with screen-derivative-normalized
+  coordinates so orthogonal grid lines meet consistently at oblique camera angles.
+- [x] Render the grid as a background helper without depth testing or depth writes, preventing the grid plane
+  from introducing depth artifacts while leaving point-cloud depth behavior unchanged.
+- [x] Verify frontend syntax, backend regressions, diff whitespace, and the empty-workspace browser render.
+- [x] Complete a focused review; preserve coordinate axes and point-cloud data.
+
+2026-09-17 verification completed:
+
+- The active `static/editor.html` script parsed successfully with Node.
+- `py -3.13 -m py_compile app.py` and all 29 unittest cases passed; `git diff --check` passed.
+- Browser smoke loaded the empty workspace and showed a continuous perspective grid with no point-cloud data.
+
 ## Current Request: Windows Startup And View Rotation Fix (2026-09-17)
 
 - [x] Correct the Windows PowerShell virtual-environment instructions in both README sections, including the

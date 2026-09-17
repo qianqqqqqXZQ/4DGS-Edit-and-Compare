@@ -472,3 +472,11 @@ static points from SH DC. Verify this work using Flask's test client and in-memo
   and renders. Dual camera linking remains on `change` events with the `dualView.syncing` recursion guard.
 - A blank workspace does not create `THREE.Points`; a red point seen during browser smoke can be real loaded fixture
   data. Do not add automatic outlier filtering or delete point-cloud vertices to hide rendering symptoms.
+
+## Perspective Grid Distortion Fix (2026-09-17)
+
+- `static/editor.html` renders the floor grid with one large shader plane. Its fragment shader now normalizes
+  fractional XY distance by `fwidth` per axis before combining the two line directions, which keeps intersections
+  visually connected at shallow camera angles.
+- The grid is a background helper (`renderOrder=-10`, `depthTest=false`, `depthWrite=false`), so it cannot create
+  depth-buffer artifacts with itself or point geometry. Coordinate axes remain separate foreground helpers.
