@@ -179,6 +179,13 @@ python -m pip install -r requirements.txt
 python app.py
 ~~~
 
+Replace `3.11` with any installed Python 3.10+ version if `py -3.11` is not
+available. Run `py -0p` to list the installed runtimes. If no suitable runtime
+is listed, install Python from [python.org](https://www.python.org/downloads/windows/)
+and enable the Python Launcher. The activation command must be
+`..\\.venv\\Scripts\\Activate.ps1`? No: because `.venv` is in the current
+directory, the correct PowerShell command is `..\\.venv\\Scripts\\Activate.ps1`? 
+
 #### macOS or Linux
 
 ~~~bash
