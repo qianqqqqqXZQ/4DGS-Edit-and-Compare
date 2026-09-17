@@ -179,12 +179,24 @@ python -m pip install -r requirements.txt
 python app.py
 ~~~
 
+Run these commands from the repository root, the directory containing `app.py`.
 Replace `3.11` with any installed Python 3.10+ version if `py -3.11` is not
 available. Run `py -0p` to list the installed runtimes. If no suitable runtime
 is listed, install Python from [python.org](https://www.python.org/downloads/windows/)
-and enable the Python Launcher. The activation command must be
-`..\\.venv\\Scripts\\Activate.ps1`? No: because `.venv` is in the current
-directory, the correct PowerShell command is `..\\.venv\\Scripts\\Activate.ps1`? 
+and enable the Python Launcher. If PowerShell blocks script activation, allow it
+for the current process only, then run the activation command again:
+
+~~~powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+~~~
+
+Activation is optional. The environment can also be used directly:
+
+~~~powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe app.py
+~~~
 
 #### macOS or Linux
 
@@ -327,13 +339,27 @@ Comparison 导出格式如下：<code>.ply</code> 为二进制小端 XYZ <code>f
 
 ### 运行与测试
 
-Windows PowerShell：
+Windows PowerShell（请在包含 `app.py` 的项目根目录执行）：
 
 ~~~powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 python app.py
+~~~
+
+如果 PowerShell 阻止脚本执行，可仅对当前 PowerShell 进程临时放行：
+
+~~~powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+~~~
+
+也可以不激活虚拟环境，直接调用其中的 Python：
+
+~~~powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe app.py
 ~~~
 
 macOS/Linux：

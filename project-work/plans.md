@@ -1,5 +1,25 @@
 # 4DGS-Edit-and-Compare Plan
 
+## Current Request: Windows Startup And View Rotation Fix (2026-09-17)
+
+- [x] Correct the Windows PowerShell virtual-environment instructions in both README sections, including the
+  process-scoped execution-policy workaround and direct `.venv` Python fallback.
+- [x] Disable OrbitControls damping in the main editor and both Dual view panes so rotation follows pointer input
+  immediately without post-release interpolation.
+- [x] Keep Dual view camera linking event-driven and remove the extra target-controller update that could trigger
+  repeated synchronization.
+- [x] Verify the active frontend syntax, Python test suite, README paths, and blank/loaded browser rendering state.
+- [x] Complete a focused review; do not filter or delete real point-cloud outliers.
+
+2026-09-17 verification completed:
+
+- README uses `..\\.venv\\Scripts\\Activate.ps1` nowhere; the valid command is `.\\.venv\\Scripts\\Activate.ps1`.
+- Node parsed both active inline scripts, Python compilation passed, and the full unittest suite passed all 29 tests.
+- The active page has `enableDamping=false` for the main and Dual controls, no render-loop `controls.update()`, and
+  Dual linking remains guarded by `dualView.syncing` on controller change events.
+- Browser smoke reached the active editor page. Its visible red point came from the pre-existing loaded
+  `export-dialog-smoke.ply` 2-point fixture in the already-running server process, not an injected blank-scene point.
+
 ## Current Request: Resolve Usability Audit Findings (2026-09-10)
 
 - [x] Eliminate Pivot and frame-response races; align each time-track playhead with its keyframes; use natural numeric 4DGS frame order.

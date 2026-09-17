@@ -461,3 +461,14 @@ static points from SH DC. Verify this work using Flask's test client and in-memo
 - The Flask globals intentionally implement one in-memory local workspace. Browser refresh loses frontend-only
   scale/Comparison transforms and server restart loses the workspace; add project persistence/undo before
   treating the editor as suitable for long-running production editing sessions.
+
+## Windows Startup And View Rotation Fix (2026-09-17)
+
+- README Windows commands must be run from the repository root and activate the local environment with
+  `.\\.venv\\Scripts\\Activate.ps1`; the former `..\\.venv\\Scripts\\Activate.ps1` text was invalid and has been
+  removed. A process-scoped execution-policy workaround and direct `.venv\\Scripts\\python.exe` fallback are documented.
+- The active UI is `static/editor.html`, served by `/`; `app.py`'s large `HTML_PAGE` is legacy and is not the current
+  route. Main and Dual `OrbitControls` use `enableDamping=false`, and `renderFrame()` only syncs the infinite grid
+  and renders. Dual camera linking remains on `change` events with the `dualView.syncing` recursion guard.
+- A blank workspace does not create `THREE.Points`; a red point seen during browser smoke can be real loaded fixture
+  data. Do not add automatic outlier filtering or delete point-cloud vertices to hide rendering symptoms.
