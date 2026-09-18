@@ -23,6 +23,16 @@ The application is intended for reconstruction and LiDAR-alignment workflows whe
 - **Evaluation:** Compute Accuracy, Completeness, L1 Chamfer Distance, F-Score, AUC, and optional Normal Consistency with exact SciPy <code>cKDTree</code> nearest-neighbour queries.
 - **Exports:** Download the current editor frame as a Gaussian <code>.pt</code>, download all editor frames as a ZIP, or export a transformed comparison cloud as <code>.ply</code>, <code>.pt</code>, or <code>.npy</code>.
 
+### Screenshots
+
+Editor workspace:
+
+![Editor workspace](static/readme/editor-workspace.png)
+
+Comparison workspace:
+
+![Comparison workspace](static/readme/comparison-workspace.png)
+
 ### Supported input data
 
 | Format | Accepted representation | Interpretation |
@@ -298,6 +308,16 @@ dict 组成的 raw Tensor、gsplat 字典、嵌套 `splats` 或非空 `frames` �
 - 支持对任意比较云进行以质心为中心的缩放、ZYX 旋转、平移和 Center align 对齐。
 - 支持 Accuracy、Completeness、Chamfer Distance、F-Score、AUC 和可选 Normal Consistency 评估，使用精确的 SciPy <code>cKDTree</code> 查询。
 - 支持浏览器下载当前 <code>.pt</code>、全部帧 ZIP，以及比较云的 <code>.ply</code>、<code>.pt</code>、<code>.npy</code> 导出。
+
+### 界面截图
+
+编辑工作区：
+
+![编辑工作区](static/readme/editor-workspace.png)
+
+比较工作区：
+
+![比较工作区](static/readme/comparison-workspace.png)
 
 ### 输入格式
 

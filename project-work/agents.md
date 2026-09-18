@@ -1,5 +1,17 @@
 # Project Notes
 
+## Grid Rotation Stability (2026-09-18)
+
+- The active `static/editor.html` grid and legacy `app.py` fallback now pass plane-local coordinates from the
+  vertex shader to the fragment shader. Grid `fract/fwidth` sampling therefore avoids large world-coordinate
+  precision changes while orbiting.
+- `syncInfiniteGrid()` snaps the grid origin to 1000-unit cells, but caches the last snapped X/Y and skips the
+  transform assignment when the cell is unchanged. This reduces animation-loop matrix invalidation during rotation.
+- Keep `vGridPosition` based on the centered `PlaneBufferGeometry`; the snapped translation is an integer multiple
+  of the one-unit grid spacing, so the visible grid phase remains unchanged while the camera moves.
+- Verification: Node inline-script parsing, Python compilation, all 29 unit tests, `git diff --check`, and local
+  browser smoke loading the active editor page all passed.
+
 ## Overview
 
 This is a Flask and Three.js 4DGS-Edit-and-Compare application. Backend state, parsing,
@@ -28,7 +40,7 @@ the root route serves the static editor when it is present.
 - `README.md`: Standard English-first/Chinese GitHub documentation covering the implemented Part editing,
   4DGS, Cloud A/B comparison, evaluation, setup, API, and export workflows.
 - `app.py`: Flask application, `STATE`, PLY/PT readers, Part/keyframe/4DGS APIs, and fallback UI.
-- `static/`: local Three.js r128 and OrbitControls assets.
+- `static/`: local Three.js r128 and OrbitControls assets, plus tracked README screenshots under `static/readme/`.
 - `static/editor.html`: active Three.js editor, binary point-cloud parser, immutable source-position preview, and responsive controls.
 - `generated/`: exported PT frames and archives.
 - `project-work/`: maintained planning and project-reference documents.

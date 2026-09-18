@@ -1,5 +1,27 @@
 # 4DGS-Edit-and-Compare Plan
 
+## Current Request: Stabilize grid during viewport rotation (2026-09-18)
+
+- [x] Create a Git checkpoint before changing the grid renderer (`91b2773`).
+- [x] Sample grid lines in plane-local coordinates to avoid large-world-coordinate precision jitter.
+- [x] Avoid reassigning the grid transform on every animation frame when the snapped origin is unchanged.
+- [x] Keep the active page and legacy embedded page implementations consistent.
+- [x] Run frontend syntax validation, Python compilation, unit tests, diff validation, and a browser smoke check.
+
+2026-09-18 verification completed:
+
+- Node parsed all 4 inline scripts in `static/editor.html`.
+- `py -3.13 -m py_compile app.py` passed.
+- `py -3.13 -m unittest discover -s tests -p "test_*.py"` passed (29 tests).
+- `git diff --check` passed.
+- Local browser smoke loaded `http://127.0.0.1:5011/` successfully with the editor viewport and Orbit controls present.
+
+## Current Request: Add README screenshots (2026-09-18)
+
+- [x] Copy the two supplied editor screenshots into a tracked README asset directory.
+- [x] Add the screenshots to both the English and Chinese README sections.
+- [x] Verify image paths, Markdown formatting, and the final Git diff.
+
 ## Current Request: Fix Perspective Grid Distortion (2026-09-17)
 
 - [x] Replace the perspective-sensitive grid line alpha calculation with screen-derivative-normalized
